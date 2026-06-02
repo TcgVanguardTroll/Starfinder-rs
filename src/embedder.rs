@@ -69,7 +69,7 @@ pub fn blob_to_embedding(blob: &[u8]) -> Option<Vec<f32>> {
 }
 
 fn find_python() -> Result<String> {
-    for candidate in &["python3", "python"] {
+    for candidate in &["python3", "python", "py"] {
         if Command::new(candidate)
             .arg("--version")
             .output()
@@ -80,7 +80,7 @@ fn find_python() -> Result<String> {
         }
     }
     anyhow::bail!(
-        "Python not found. Install Python 3 and run:\n  pip install deepface tf-keras"
+        "Python not found. Install Python 3 and run:\n  pip install insightface onnxruntime"
     )
 }
 
