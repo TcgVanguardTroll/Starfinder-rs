@@ -36,6 +36,7 @@ pub(crate) async fn embed_all(db: &Database, force: bool) -> anyhow::Result<()> 
 
     let mut ok = 0;
     let mut skipped = 0;
+    let mut failed = 0;
 
     for p in &pending {
         let urls = build_centroid_urls(p, stash.as_ref()).await;
@@ -53,23 +54,41 @@ pub(crate) async fn embed_all(db: &Database, force: bool) -> anyhow::Result<()> 
         std::io::Write::flush(&mut std::io::stdout()).ok();
 
         match embedder::generate_centroid_embedding(&urls) {
-            Some(emb) => {
+            Ok(Some(emb)) => {
                 db.save_embedding(&p.name, &emb)?;
                 println!("{} ({} img)", "done".green(), urls.len());
                 ok += 1;
             }
-            None => {
+            Ok(None) => {
                 println!("{}", "no face detected".red());
                 skipped += 1;
+            }
+            Err(e) => {
+                // The sidecar call failed (not a genuine no-face result), so
+                // don't claim "no face" — this row can be retried.
+                println!("{}", format!("embedding failed: {}", e).yellow());
+                log::warn!("embedding sidecar failed for {}: {:#}", p.name, e);
+                failed += 1;
             }
         }
     }
 
     println!();
-    println!(
-        "{}",
-        format!("Done: {} embedded, {} skipped", ok, skipped).green()
-    );
+    if failed > 0 {
+        println!(
+            "{}",
+            format!(
+                "Done: {} embedded, {} skipped, {} failed (retry with 'luminary embed')",
+                ok, skipped, failed
+            )
+            .yellow()
+        );
+    } else {
+        println!(
+            "{}",
+            format!("Done: {} embedded, {} skipped", ok, skipped).green()
+        );
+    }
     Ok(())
 }
 

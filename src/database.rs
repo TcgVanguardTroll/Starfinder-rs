@@ -21,6 +21,19 @@ pub struct BodyIndexEntry {
     pub seg: Option<Vec<f32>>,
 }
 
+/// One row of the per-image corpus: a single gathered image, its provenance
+/// (`source`), classified `view`, 0–1 `quality`, and the per-image vectors.
+pub struct ImageRow {
+    pub performer: String,
+    pub url: String,
+    pub source: String,
+    pub view: String,
+    pub quality: f32,
+    pub pose: Option<Vec<f32>>,
+    pub seg: Option<Vec<f32>>,
+    pub face: Option<Vec<f32>>,
+}
+
 /// Database manager for storing performers
 pub struct Database {
     conn: Connection,
@@ -77,6 +90,30 @@ impl Database {
                 seg_vec   BLOB,
                 n_frames  INTEGER NOT NULL DEFAULT 0
             )",
+            [],
+        )?;
+
+        // Per-image corpus: one row per gathered image, tagged with its source,
+        // view (front/rear/side/…) and a 0–1 quality score, plus the per-image
+        // vectors. body_index centroids are derived from this (quality-weighted,
+        // view-filtered). Stores vectors + metadata only — never image bytes —
+        // so "keep every good image" stays cheap. Grows as sources are added.
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS images (
+                performer TEXT NOT NULL,
+                url       TEXT NOT NULL,
+                source    TEXT NOT NULL,
+                view      TEXT NOT NULL DEFAULT 'unknown',
+                quality   REAL NOT NULL DEFAULT 0,
+                pose_vec  BLOB,
+                seg_vec   BLOB,
+                face_vec  BLOB,
+                PRIMARY KEY (performer, url)
+            )",
+            [],
+        )?;
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_images_view ON images(performer, view)",
             [],
         )?;
 
@@ -279,6 +316,89 @@ impl Database {
             }
         }
         Ok(out)
+    }
+
+    /// Upserts one image row (keyed by performer + url) into the corpus.
+    pub fn save_image(&self, img: &ImageRow) -> Result<()> {
+        let pose = img.pose.as_deref().map(crate::embedder::embedding_to_blob);
+        let seg = img.seg.as_deref().map(crate::embedder::embedding_to_blob);
+        let face = img.face.as_deref().map(crate::embedder::embedding_to_blob);
+        self.conn.execute(
+            "INSERT OR REPLACE INTO images
+                (performer, url, source, view, quality, pose_vec, seg_vec, face_vec)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                img.performer,
+                img.url,
+                img.source,
+                img.view,
+                img.quality,
+                pose,
+                seg,
+                face,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// URLs already stored for a performer — so ingest can skip re-embedding
+    /// images it has already seen (the corpus grows incrementally).
+    pub fn existing_image_urls(
+        &self,
+        performer: &str,
+    ) -> Result<std::collections::HashSet<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT url FROM images WHERE performer = ?1")?;
+        let urls = stmt
+            .query_map(rusqlite::params![performer], |r| r.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(urls.into_iter().collect())
+    }
+
+    /// Loads a performer's images, optionally filtered to one `view`
+    /// (front/rear/side/…). Pass `None` for all views.
+    pub fn load_images(&self, performer: &str, view: Option<&str>) -> Result<Vec<ImageRow>> {
+        let (sql, has_view) = match view {
+            Some(_) => (
+                "SELECT performer, url, source, view, quality, pose_vec, seg_vec, face_vec
+                 FROM images WHERE performer = ?1 AND view = ?2",
+                true,
+            ),
+            None => (
+                "SELECT performer, url, source, view, quality, pose_vec, seg_vec, face_vec
+                 FROM images WHERE performer = ?1",
+                false,
+            ),
+        };
+        let mut stmt = self.conn.prepare(sql)?;
+        let map_row = |row: &rusqlite::Row| {
+            Ok(ImageRow {
+                performer: row.get(0)?,
+                url: row.get(1)?,
+                source: row.get(2)?,
+                view: row.get(3)?,
+                quality: row.get(4)?,
+                pose: decode_embedding(row.get(5)?),
+                seg: decode_embedding(row.get(6)?),
+                face: decode_embedding(row.get(7)?),
+            })
+        };
+        let rows = if has_view {
+            stmt.query_map(rusqlite::params![performer, view.unwrap()], map_row)?
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            stmt.query_map(rusqlite::params![performer], map_row)?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        Ok(rows)
+    }
+
+    /// Total number of images in the corpus.
+    pub fn images_count(&self) -> Result<usize> {
+        Ok(self
+            .conn
+            .query_row("SELECT COUNT(*) FROM images", [], |r| r.get(0))?)
     }
 
     /// Saves a name alias pointing to a canonical performer name
@@ -532,5 +652,40 @@ mod tests {
         db.save_body_index(&p, Some(&[2.0]), None, 1).unwrap();
         assert_eq!(db.body_index_count().unwrap(), 1);
         assert_eq!(db.load_body_index().unwrap()[0].pose, Some(vec![2.0]));
+    }
+
+    fn img(url: &str, view: &str, face: Option<Vec<f32>>) -> ImageRow {
+        ImageRow {
+            performer: "Star".to_string(),
+            url: url.to_string(),
+            source: "pornpics".to_string(),
+            view: view.to_string(),
+            quality: 0.8,
+            pose: None,
+            seg: None,
+            face,
+        }
+    }
+
+    #[test]
+    fn images_roundtrip_view_filter_and_upsert() {
+        let db = Database::new(":memory:").unwrap();
+        db.save_image(&img("u1", "front", Some(vec![3.0]))).unwrap();
+        db.save_image(&img("u2", "rear", None)).unwrap();
+
+        assert_eq!(db.images_count().unwrap(), 2);
+        assert_eq!(db.load_images("Star", None).unwrap().len(), 2);
+
+        let front = db.load_images("Star", Some("front")).unwrap();
+        assert_eq!(front.len(), 1);
+        assert_eq!(front[0].face, Some(vec![3.0]));
+
+        let urls = db.existing_image_urls("Star").unwrap();
+        assert!(urls.contains("u1") && urls.contains("u2"));
+
+        // Re-saving the same (performer, url) replaces rather than duplicates.
+        db.save_image(&img("u1", "side", None)).unwrap();
+        assert_eq!(db.images_count().unwrap(), 2);
+        assert_eq!(db.load_images("Star", Some("side")).unwrap().len(), 1);
     }
 }

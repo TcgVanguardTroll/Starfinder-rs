@@ -210,10 +210,16 @@ fn normalize(v: &mut [f32]) {
 /// Generates a centroid embedding by averaging the face embeddings of several
 /// images of the same person. Each embedding is L2-normalised before averaging
 /// so no single photo dominates. More angles/lighting ⇒ a more robust face
-/// signature. Returns None if no image yielded a detectable face.
-pub fn generate_centroid_embedding(image_urls: &[String]) -> Option<Vec<f32>> {
+/// signature.
+///
+/// Distinguishes the two "no embedding" outcomes so callers can report honestly
+/// instead of always blaming the face:
+/// - `Err(_)`   — the sidecar call itself failed (both attempts errored, e.g. a
+///   transient model-load or image-download hiccup); retrying usually succeeds.
+/// - `Ok(None)` — the sidecar ran fine but no image yielded a usable face.
+pub fn generate_centroid_embedding(image_urls: &[String]) -> Result<Option<Vec<f32>>> {
     // One batched sidecar call for all images (model loads once).
-    let embeddings = generate_embeddings(image_urls).ok()?;
+    let embeddings = generate_embeddings(image_urls)?;
 
     let mut sum: Vec<f32> = Vec::new();
     let mut count = 0usize;
@@ -232,14 +238,14 @@ pub fn generate_centroid_embedding(image_urls: &[String]) -> Option<Vec<f32>> {
     }
 
     if count == 0 {
-        return None;
+        return Ok(None);
     }
     for x in sum.iter_mut() {
         *x /= count as f32;
     }
     normalize(&mut sum);
     log::info!("Centroid embedding from {} image(s)", count);
-    Some(sum)
+    Ok(Some(sum))
 }
 
 /// Averages several stored embeddings into one L2-normalised centroid, so a

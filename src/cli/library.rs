@@ -96,7 +96,7 @@ pub(crate) async fn add_performers(db: &Database, names: Vec<String>) -> anyhow:
                         let urls = build_centroid_urls(&performer, stash_client.as_ref()).await;
                         if !urls.is_empty() {
                             match embedder::generate_centroid_embedding(&urls) {
-                                Some(emb) => {
+                                Ok(Some(emb)) => {
                                     let _ = db.save_embedding(&performer.name, &emb);
                                     println!(
                                         "     {} face embedding stored ({} image{})",
@@ -105,8 +105,24 @@ pub(crate) async fn add_performers(db: &Database, names: Vec<String>) -> anyhow:
                                         if urls.len() == 1 { "" } else { "s" }
                                     );
                                 }
-                                None => {
+                                Ok(None) => {
+                                    println!(
+                                        "     {} {}",
+                                        "↳".bright_black(),
+                                        "no face detected — skipping embedding".bright_black()
+                                    );
                                     log::debug!("No face detected for {}", name);
+                                }
+                                Err(e) => {
+                                    // A sidecar hiccup, not a real no-face result —
+                                    // say so (and that it's retryable) instead of
+                                    // silently dropping the embedding.
+                                    println!(
+                                        "     {} {}",
+                                        "↳".bright_black(),
+                                        "embedding failed — retry with 'luminary embed'".yellow()
+                                    );
+                                    log::warn!("embedding sidecar failed for {}: {:#}", name, e);
                                 }
                             }
                         }
