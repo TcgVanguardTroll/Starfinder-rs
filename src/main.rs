@@ -203,7 +203,11 @@ enum Commands {
         remove: bool,
     },
     /// Generate face embeddings for all performers missing one
-    Embed,
+    Embed {
+        /// Re-embed everyone (e.g. after enabling StashDB enrichment)
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
     /// Pre-fetch and embed a pool of candidates into the local face corpus,
     /// so later face searches are instant (no API calls or re-embedding).
     Warm {
@@ -324,8 +328,8 @@ async fn main() -> anyhow::Result<()> {
         } => {
             manage_alias(&db, alias, canonical, remove)?;
         }
-        Commands::Embed => {
-            embed_all(&db).await?;
+        Commands::Embed { force } => {
+            embed_all(&db, force).await?;
         }
         Commands::Warm { limit } => {
             warm(&db, limit).await?;
@@ -1451,11 +1455,18 @@ fn manage_alias(
     Ok(())
 }
 
-async fn embed_all(db: &Database) -> anyhow::Result<()> {
-    let pending = db.get_performers_without_embedding()?;
+async fn embed_all(db: &Database, force: bool) -> anyhow::Result<()> {
+    let pending = if force {
+        db.get_all_performers()?
+    } else {
+        db.get_performers_without_embedding()?
+    };
 
     if pending.is_empty() {
-        println!("{}", "All performers already have face embeddings.".green());
+        println!(
+            "{}",
+            "All performers already have face embeddings. Use --force to re-embed.".green()
+        );
         return Ok(());
     }
 
