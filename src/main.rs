@@ -77,6 +77,13 @@ enum Commands {
         #[arg(long, default_value_t = 10)]
         limit: usize,
     },
+    /// Find performers similar to a specific one
+    Similar {
+        /// Name of the performer to base results on
+        name: String,
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+    },
     /// View or change settings
     Config {
         /// Setting to change (e.g. gender)
@@ -136,6 +143,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Recommend { limit } => {
             recommend(&db, limit).await?;
+        }
+        Commands::Similar { name, limit } => {
+            similar(&db, &name, limit).await?;
         }
         Commands::Config { key, value } => {
             configure(key, value)?;
@@ -489,6 +499,66 @@ async fn recommend(db: &Database, limit: usize) -> anyhow::Result<()> {
     println!();
     println!("{}", "Use 'starfinder add <name>' to add any to your profile.".bright_black());
 
+    Ok(())
+}
+
+async fn similar(db: &Database, name: &str, limit: usize) -> anyhow::Result<()> {
+    let performer = db.get_performer(name)?
+        .ok_or_else(|| anyhow::anyhow!("'{}' not found in your database. Add them first with 'starfinder add'.", name))?;
+
+    let tpdb_uuid = performer.source_url
+        .as_deref()
+        .and_then(|url| url.split('/').last())
+        .ok_or_else(|| anyhow::anyhow!("No TPDB ID stored for '{}'", name))?
+        .to_string();
+
+    let api_key = std::env::var("TPDB_API_KEY")
+        .context("TPDB_API_KEY not set")?;
+    let cfg = config::Config::load();
+    let client = TpdbClient::new(api_key);
+
+    println!("{} {}",
+        "Finding performers similar to".bright_cyan(),
+        performer.name.bright_white().bold()
+    );
+    println!("{} {}  {}  {}",
+        " ".bright_black(),
+        performer.body_type.bright_black(),
+        performer.ethnicity.as_deref().unwrap_or("?").bright_black(),
+        performer.hair_color.as_deref().unwrap_or("?").bright_black(),
+    );
+    println!();
+
+    let known_names: std::collections::HashSet<String> = db.get_all_performers()?
+        .iter()
+        .map(|p| p.name.to_lowercase())
+        .collect();
+
+    let mut results = client.similar_to(&tpdb_uuid, &cfg.gender_filter).await?;
+    results.retain(|p| !known_names.contains(&p.name.to_lowercase()));
+    results.truncate(limit);
+
+    if results.is_empty() {
+        println!("{}", "No similar performers found.".yellow());
+        return Ok(());
+    }
+
+    for (i, p) in results.iter().enumerate() {
+        let age_str = p.age.map(|a| format!(", {}", recommender::age_bucket(a))).unwrap_or_default();
+        println!("{}. {} {}",
+            (i + 1).to_string().bright_black(),
+            p.name.bright_white().bold(),
+            format!("({}, {}{}{})",
+                p.body_type,
+                p.ethnicity.as_deref().unwrap_or("?"),
+                p.hair_color.as_ref().map(|h| format!(", {}", h)).unwrap_or_default(),
+                age_str,
+            ).bright_black()
+        );
+    }
+
+    println!();
+    println!("{}", "Use 'starfinder add <name>' to add any to your profile.".bright_black());
     Ok(())
 }
 

@@ -160,6 +160,31 @@ impl TpdbClient {
         performer
     }
 
+    /// Find performers similar to a single performer by their TPDB UUID.
+    pub async fn similar_to(&self, tpdb_uuid: &str, gender_filter: &GenderFilter) -> Result<Vec<Performer>> {
+        let url = format!("{}/performers/{}/similar", TPDB_API_BASE, tpdb_uuid);
+        log::info!("Similar to {}: {}", tpdb_uuid, url);
+
+        let resp = self.client.get(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .send().await
+            .context("Failed to query TPDB similar")?;
+
+        if !resp.status().is_success() {
+            anyhow::bail!("TPDB returned {}", resp.status());
+        }
+
+        let result: TpdbSearchResponse = resp.json().await
+            .context("Failed to parse similar response")?;
+
+        Ok(result.data.into_iter()
+            .filter(|p| gender_filter.matches(
+                p.gender.as_deref().or(p.extras.gender.as_deref())
+            ))
+            .map(|p| self.convert_to_performer(p))
+            .collect())
+    }
+
     /// Primary: use /performers/similar?ids=... with liked performer IDs.
     /// Fallback: filtered search by gender + ethnicity + cup.
     pub async fn get_recommendations(
