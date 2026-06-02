@@ -30,12 +30,23 @@ pub fn age_bucket(age: u32) -> &'static str {
     }
 }
 
+fn attribute_label(p: &Performer, depth: usize) -> String {
+    match depth {
+        0 => p.body_type.clone(),
+        1 => p.ethnicity.as_deref().unwrap_or("Unknown").to_string(),
+        2 => p.hair_color.as_deref().unwrap_or("Unknown").to_string(),
+        3 => p.age.map(age_bucket).unwrap_or("Unknown").to_string(),
+        4 => p.eye_color.as_deref().unwrap_or("Unknown").to_string(),
+        _ => unreachable!(),
+    }
+}
+
 pub fn build_preference_tree(performers: &[Performer]) -> Vec<PreferenceNode> {
     build_level(performers, performers.len(), 0)
 }
 
 fn build_level(performers: &[Performer], parent_count: usize, depth: usize) -> Vec<PreferenceNode> {
-    if depth >= 4 || performers.is_empty() { return vec![]; }
+    if depth >= 5 || performers.is_empty() { return vec![]; }
 
     let mut groups = group_by_attribute(performers, depth);
     let mut nodes: Vec<PreferenceNode> = groups
@@ -59,13 +70,7 @@ fn build_level(performers: &[Performer], parent_count: usize, depth: usize) -> V
 fn group_by_attribute(performers: &[Performer], depth: usize) -> HashMap<String, Vec<Performer>> {
     let mut map: HashMap<String, Vec<Performer>> = HashMap::new();
     for p in performers {
-        let key = match depth {
-            0 => p.body_type.clone(),
-            1 => p.ethnicity.as_deref().unwrap_or("Unknown").to_string(),
-            2 => p.hair_color.as_deref().unwrap_or("Unknown").to_string(),
-            3 => p.age.map(age_bucket).unwrap_or("Unknown").to_string(),
-            _ => unreachable!(),
-        };
+        let key = attribute_label(p, depth);
         map.entry(key).or_default().push(p.clone());
     }
     map
@@ -77,6 +82,7 @@ fn attribute_name(depth: usize) -> &'static str {
         1 => "ethnicity",
         2 => "hair_color",
         3 => "age_range",
+        4 => "eye_color",
         _ => "unknown",
     }
 }
@@ -114,42 +120,54 @@ pub fn dominant_query_path(nodes: &[PreferenceNode]) -> Vec<String> {
 // ── Scoring ───────────────────────────────────────────────────────────────────
 
 /// Score a candidate performer against the preference tree.
-/// Physique (body type) is the primary signal.
-/// Appearance (hair, eye colour) is a small bonus — already captured by the tree.
+///
+/// Body type is a HARD requirement — wrong physique = excluded entirely.
+/// Ethnicity and age matter a lot.
+/// Hair and eye colour are small bonuses — different is fine.
 pub fn score_performer(performer: &Performer, tree: &[PreferenceNode]) -> f64 {
-    let mut score = 0.0;
-
-    // Body type — PRIMARY (weight 5). No match = still eligible but low score.
-    if let Some(bt) = tree.iter().find(|n| n.label == performer.body_type) {
-        score += bt.pct() / 100.0 * 5.0;
-    }
-
-    // Ethnicity (weight 2)
-    let eth = performer.ethnicity.as_deref().unwrap_or("Unknown");
-    let eth_node = tree.iter()
-        .flat_map(|bt| bt.children.iter())
-        .find(|n| n.label == eth);
-
-    let Some(eth_node) = eth_node else {
-        return score;
+    // Hard gate: body type must match something in the tree
+    let bt_node = tree.iter().find(|n| n.label == performer.body_type);
+    let Some(bt_node) = bt_node else {
+        return 0.0; // wrong physique — excluded
     };
-    score += eth_node.pct() / 100.0 * 2.0;
 
-    // Age bucket (weight 2) — physique changes with age
-    if let Some(age) = performer.age {
-        let bucket = age_bucket(age);
-        let age_node = eth_node.children.iter()
-            .flat_map(|hair| hair.children.iter())
-            .find(|n| n.label == bucket);
-        if let Some(age_node) = age_node {
-            score += age_node.pct() / 100.0 * 2.0;
+    // Start score from body type confidence
+    let mut score = bt_node.pct() / 100.0 * 5.0;
+
+    // Ethnicity — important (weight 3)
+    let eth = performer.ethnicity.as_deref().unwrap_or("Unknown");
+    let eth_node = bt_node.children.iter().find(|n| n.label == eth);
+    if let Some(eth_node) = eth_node {
+        score += eth_node.pct() / 100.0 * 3.0;
+
+        // Age bucket — important (weight 2)
+        if let Some(age) = performer.age {
+            let bucket = age_bucket(age);
+            let age_node = eth_node.children.iter()
+                .flat_map(|h| h.children.iter())
+                .find(|n| n.label == bucket);
+            if let Some(age_node) = age_node {
+                score += age_node.pct() / 100.0 * 2.0;
+            }
         }
-    }
 
-    // Hair colour — low bonus (weight 1)
-    let hair = performer.hair_color.as_deref().unwrap_or("Unknown");
-    if let Some(hair_node) = eth_node.children.iter().find(|n| n.label == hair) {
-        score += hair_node.pct() / 100.0 * 1.0;
+        // Hair colour — small bonus (weight 0.5)
+        let hair = performer.hair_color.as_deref().unwrap_or("Unknown");
+        if let Some(hair_node) = eth_node.children.iter().find(|n| n.label == hair) {
+            score += hair_node.pct() / 100.0 * 0.5;
+
+            // Eye colour — small bonus (weight 0.3)
+            let eye = performer.eye_color.as_deref().unwrap_or("Unknown");
+            if let Some(age_node) = hair_node.children.iter().find(|n| {
+                // age bucket level — look one deeper for eye color
+                n.children.iter().any(|e| e.label == eye)
+            }) {
+                let eye_node = age_node.children.iter().find(|e| e.label == eye);
+                if let Some(eye_node) = eye_node {
+                    score += eye_node.pct() / 100.0 * 0.3;
+                }
+            }
+        }
     }
 
     score
