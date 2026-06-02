@@ -9,6 +9,8 @@
 
 All data — performer profiles, face embeddings, preferences — stays on your machine. No accounts, no telemetry, no cloud.
 
+> 📐 See [DESIGN.md](DESIGN.md) for architecture, data model, and workflow diagrams (Mermaid).
+
 ---
 
 ## Features
