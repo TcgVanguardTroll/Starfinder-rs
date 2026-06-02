@@ -9,6 +9,7 @@ mod scraper;
 mod tpdb;
 mod recommender;
 mod config;
+mod embedder;
 
 use database::Database;
 use models::SearchFilters;
@@ -119,6 +120,8 @@ enum Commands {
         #[arg(long, default_value_t = 10)]
         limit: usize,
     },
+    /// Generate face embeddings for all performers missing one
+    Embed,
     /// View or change settings
     Config {
         /// Setting to change (e.g. gender)
@@ -184,6 +187,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Similar { name, limit } => {
             similar(&db, &name, limit).await?;
+        }
+        Commands::Embed => {
+            embed_all(&db)?;
         }
         Commands::Config { key, value } => {
             configure(key, value)?;
@@ -259,6 +265,21 @@ async fn add_performers(db: &Database, names: Vec<String>) -> anyhow::Result<()>
                             name.bright_white().bold(),
                             format!("({}, {})", performer.body_type, source).bright_black()
                         );
+                        // Try to generate face embedding silently
+                        let face_url = performer.face_url.as_deref()
+                            .or(performer.profile_image_url.as_deref());
+                        if let Some(url) = face_url {
+                            match embedder::generate_embedding(url) {
+                                Ok(emb) => {
+                                    let _ = db.save_embedding(&performer.name, &emb);
+                                    println!("     {} face embedding stored",
+                                        "↳".bright_black());
+                                }
+                                Err(e) => {
+                                    log::debug!("Embedding skipped for {}: {}", name, e);
+                                }
+                            }
+                        }
                     }
                     Err(e) => {
                         println!("\r{} {} {}: {}",
@@ -625,28 +646,63 @@ async fn find(
     ).await?;
 
     results.retain(|p| !known_names.contains(&p.name.to_lowercase()));
-    results.truncate(limit);
 
-    if results.is_empty() {
+    // ── Face similarity scoring (if looks_like has a stored embedding) ────
+    let ref_embedding = looks_like.as_deref()
+        .and_then(|name| db.get_embedding(name).ok().flatten());
+
+    let mut scored: Vec<(Option<f32>, models::Performer)> = results
+        .into_iter()
+        .map(|p| {
+            let sim = ref_embedding.as_ref().and_then(|ref_emb| {
+                // Use cached embedding if available, otherwise generate on the fly
+                let emb = db.get_embedding(&p.name).ok().flatten()
+                    .or_else(|| {
+                        p.face_url.as_deref()
+                            .or(p.profile_image_url.as_deref())
+                            .and_then(|url| embedder::generate_embedding(url).ok()
+                                .inspect(|e| { let _ = db.save_embedding(&p.name, e); }))
+                    });
+                emb.map(|e| embedder::cosine_similarity(ref_emb, &e))
+            });
+            (sim, p)
+        })
+        .collect();
+
+    // Sort by face similarity if available, otherwise keep original order
+    if ref_embedding.is_some() {
+        scored.sort_by(|a, b| b.0.unwrap_or(-1.0)
+            .partial_cmp(&a.0.unwrap_or(-1.0))
+            .unwrap_or(std::cmp::Ordering::Equal));
+    }
+
+    scored.truncate(limit);
+
+    if scored.is_empty() {
         println!("{}", "No results found. Try relaxing some filters.".yellow());
         return Ok(());
     }
 
-    println!("{}", format!("{} results:", results.len()).bright_cyan().bold());
+    let using_face_ml = ref_embedding.is_some();
+    println!("{}", format!("{} results{}:",
+        scored.len(),
+        if using_face_ml { " (sorted by face similarity)" } else { "" }
+    ).bright_cyan().bold());
     println!();
-    for (i, p) in results.iter().enumerate() {
+
+    for (i, (sim, p)) in scored.iter().enumerate() {
         let age_str = p.age.map(|a| format!(", {}", recommender::age_bucket(a))).unwrap_or_default();
-        // Extract waist/hips from measurements for display
         let meas_str = p.measurements.as_deref().map(|m| {
             let parts: Vec<&str> = m.split('-').collect();
             if parts.len() >= 3 {
                 format!(", {}w {}h",
                     parts[1].trim(),
-                    parts[2].trim().trim_end_matches(|c: char| !c.is_ascii_digit())
-                )
+                    parts[2].trim().trim_end_matches(|c: char| !c.is_ascii_digit()))
             } else { String::new() }
         }).unwrap_or_default();
-        println!("{}. {} {}",
+        let sim_str = sim.map(|s| format!("  face {:.0}%", embedder::similarity_pct(s)))
+            .unwrap_or_default();
+        println!("{}. {} {}{}",
             (i + 1).to_string().bright_black(),
             p.name.bright_white().bold(),
             format!("({}, {}{}{}{}{})",
@@ -656,10 +712,14 @@ async fn find(
                 p.eye_color.as_ref().map(|e| format!(", {} eyes", e)).unwrap_or_default(),
                 meas_str,
                 age_str,
-            ).bright_black()
+            ).bright_black(),
+            sim_str.bright_cyan(),
         );
     }
     println!();
+    if !using_face_ml && looks_like.is_some() {
+        println!("{}", "  Tip: run 'starfinder embed' to generate face embeddings for ML-powered face similarity".bright_black());
+    }
     println!("{}", "Use 'starfinder add <name>' to add any to your profile.".bright_black());
     Ok(())
 }
@@ -721,6 +781,51 @@ async fn similar(db: &Database, name: &str, limit: usize) -> anyhow::Result<()> 
 
     println!();
     println!("{}", "Use 'starfinder add <name>' to add any to your profile.".bright_black());
+    Ok(())
+}
+
+fn embed_all(db: &Database) -> anyhow::Result<()> {
+    let pending = db.get_performers_without_embedding()?;
+
+    if pending.is_empty() {
+        println!("{}", "All performers already have face embeddings.".green());
+        return Ok(());
+    }
+
+    println!("{}", format!("Generating embeddings for {} performers...", pending.len())
+        .bright_cyan().bold());
+    println!("{}", "  Note: first run downloads the ArcFace model (~100 MB)".bright_black());
+    println!();
+
+    let mut ok = 0;
+    let mut skipped = 0;
+
+    for p in &pending {
+        let face_url = p.face_url.as_deref().or(p.profile_image_url.as_deref());
+        let Some(url) = face_url else {
+            println!("  {} {} — no image URL", "–".bright_black(), p.name.bright_black());
+            skipped += 1;
+            continue;
+        };
+
+        print!("  {} {}... ", "→".bright_black(), p.name.bright_white());
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+
+        match embedder::generate_embedding(url) {
+            Ok(emb) => {
+                db.save_embedding(&p.name, &emb)?;
+                println!("{}", "done".green());
+                ok += 1;
+            }
+            Err(e) => {
+                println!("{} {}", "failed:".red(), e.to_string().bright_black());
+                skipped += 1;
+            }
+        }
+    }
+
+    println!();
+    println!("{}", format!("Done: {} embedded, {} skipped", ok, skipped).green());
     Ok(())
 }
 

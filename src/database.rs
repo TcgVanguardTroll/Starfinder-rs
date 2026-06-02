@@ -19,6 +19,12 @@ impl Database {
 
     /// Initializes the database schema
     fn init_schema(&self) -> Result<()> {
+        // Add embedding column if missing (safe to run on existing DBs)
+        let _ = self.conn.execute(
+            "ALTER TABLE performers ADD COLUMN embedding TEXT",
+            [],
+        );
+
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS performers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -192,6 +198,46 @@ impl Database {
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
+        Ok(performers)
+    }
+
+    /// Saves a face embedding for a performer (JSON-serialised Vec<f32>)
+    pub fn save_embedding(&self, name: &str, embedding: &[f32]) -> Result<()> {
+        let json = serde_json::to_string(embedding)?;
+        self.conn.execute(
+            "UPDATE performers SET embedding = ?1 WHERE name = ?2",
+            rusqlite::params![json, name],
+        )?;
+        Ok(())
+    }
+
+    /// Retrieves the stored face embedding for a performer
+    pub fn get_embedding(&self, name: &str) -> Result<Option<Vec<f32>>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT embedding FROM performers WHERE name = ?1"
+        )?;
+        let mut rows = stmt.query(rusqlite::params![name])?;
+        if let Some(row) = rows.next()? {
+            let json: Option<String> = row.get(0)?;
+            if let Some(s) = json {
+                let emb: Vec<f32> = serde_json::from_str(&s)?;
+                return Ok(Some(emb));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Gets all performers that have a face_url stored (needed for embedding generation)
+    pub fn get_performers_without_embedding(&self) -> Result<Vec<crate::models::Performer>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT data FROM performers WHERE embedding IS NULL"
+        )?;
+        let performers = stmt
+            .query_map([], |row| {
+                let data: String = row.get(0)?;
+                Ok(serde_json::from_str(&data).unwrap())
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(performers)
     }
 

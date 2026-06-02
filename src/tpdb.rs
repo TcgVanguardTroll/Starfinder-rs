@@ -43,6 +43,8 @@ struct TpdbPerformer {
     #[serde(default)]
     image: Option<String>,
     #[serde(default)]
+    face: Option<String>,
+    #[serde(default)]
     images: Vec<String>,
 }
 
@@ -157,6 +159,7 @@ impl TpdbClient {
         performer.measurements = tpdb.extras.measurements;
         performer.birthdate = tpdb.extras.birthday;
 
+        performer.face_url = tpdb.face;
         performer.profile_image_url = tpdb.image.or_else(|| tpdb.images.first().cloned());
         performer.gallery_urls = tpdb.images;
 

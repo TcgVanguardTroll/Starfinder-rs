@@ -18,6 +18,7 @@ pub struct Performer {
     pub active_years: Option<String>,
     // Images
     pub profile_image_url: Option<String>,
+    pub face_url: Option<String>,
     pub gallery_urls: Vec<String>,
     pub gender: Option<String>,
     pub tpdb_id: Option<i64>,
@@ -47,6 +48,7 @@ impl Performer {
             categories: Vec::new(),
             active_years: None,
             profile_image_url: None,
+            face_url: None,
             gallery_urls: Vec::new(),
             gender: None,
             tpdb_id: None,
