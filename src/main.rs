@@ -15,6 +15,21 @@ use database::Database;
 use models::SearchFilters;
 use scraper::Scraper;
 use tpdb::TpdbClient;
+use image_cache::ImageCache;
+
+/// Downloads (cached) and renders a small inline thumbnail for a performer.
+/// Best-effort: silently does nothing if the terminal can't display images.
+async fn render_thumbnail(cache: &ImageCache, url: &str) {
+    if let Ok(path) = cache.get_image(url).await {
+        let conf = viuer::Config {
+            absolute_offset: false,
+            width: Some(20),
+            height: Some(10),
+            ..Default::default()
+        };
+        let _ = viuer::print_from_file(&path, &conf);
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "luminary")]
@@ -113,6 +128,9 @@ enum Commands {
         /// Match the face only — ignore body, boobs, and tattoo entirely
         #[arg(long, default_value_t = false)]
         face_only: bool,
+        /// Render a thumbnail image inline for each result (terminal permitting)
+        #[arg(long, default_value_t = false)]
+        images: bool,
         /// Minimum age
         #[arg(long)]
         age_min: Option<u32>,
@@ -201,8 +219,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::Recommend { limit } => {
             recommend(&db, limit).await?;
         }
-        Commands::Find { looks_like, body_like, hair, eye, ethnicity, cup, hips, waist, whr, tattoo, face_only, age_min, age_max, limit } => {
-            find(&db, looks_like, body_like, hair, eye, ethnicity, cup, hips, waist, whr, tattoo, face_only, age_min, age_max, limit).await?;
+        Commands::Find { looks_like, body_like, hair, eye, ethnicity, cup, hips, waist, whr, tattoo, face_only, images, age_min, age_max, limit } => {
+            find(&db, looks_like, body_like, hair, eye, ethnicity, cup, hips, waist, whr, tattoo, face_only, images, age_min, age_max, limit).await?;
         }
         Commands::Similar { name, limit } => {
             similar(&db, &name, limit).await?;
@@ -617,6 +635,7 @@ async fn find(
     whr_arg:     Option<f64>,
     tattoo_arg:  Option<String>,
     face_only:   bool,
+    images:      bool,
     age_min:     Option<u32>,
     age_max:     Option<u32>,
     limit:       usize,
@@ -780,6 +799,8 @@ async fn find(
         .bright_cyan().bold());
     println!();
 
+    let img_cache = if images { ImageCache::new().ok() } else { None };
+
     for (i, (_score, face, body, has_stamp, p)) in scored.iter().enumerate() {
         let age_str = p.age.map(|a| format!(", {}", recommender::age_bucket(a))).unwrap_or_default();
         let meas_str = p.measurements.as_deref().map(|m| {
@@ -811,6 +832,16 @@ async fn find(
             tags.bright_cyan(),
             stamp.bright_green(),
         );
+        // Clickable TPDB profile link disambiguates generic names
+        if let Some(url) = &p.source_url {
+            println!("   {} {}", "↳".bright_black(), url.blue().underline());
+        }
+        // Optional inline thumbnail
+        if let Some(cache) = &img_cache {
+            if let Some(url) = p.face_url.as_deref().or(p.profile_image_url.as_deref()) {
+                render_thumbnail(cache, url).await;
+            }
+        }
     }
     println!();
     if ref_embedding.is_none() && looks_like.is_some() {
