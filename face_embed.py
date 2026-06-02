@@ -17,8 +17,23 @@ First run downloads the buffalo_l model (~300 MB, cached after that).
 import sys
 import json
 import os
+import glob
 import tempfile
 import urllib.request
+
+
+def _register_cuda_dlls():
+    """Add the pip-installed NVIDIA CUDA/cuDNN bin dirs to the DLL search path
+    so onnxruntime-gpu can create CUDA sessions without a system CUDA toolkit.
+    Must run before onnxruntime is imported."""
+    try:
+        import nvidia
+        base = list(nvidia.__path__)[0]
+        for d in glob.glob(os.path.join(base, "*", "bin")):
+            if os.path.isdir(d):
+                os.add_dll_directory(d)
+    except Exception:
+        pass
 
 
 def download(url):
@@ -39,6 +54,7 @@ def main():
         print(json.dumps([{"error": "Usage: face_embed.py <url> [url ...]"}]))
         sys.exit(1)
 
+    _register_cuda_dlls()
     try:
         import cv2
         from insightface.app import FaceAnalysis

@@ -1,1 +1,4 @@
 /target
+
+# Machine-local build config (absolute target-dir + linker paths)
+/.cargo/config.toml
