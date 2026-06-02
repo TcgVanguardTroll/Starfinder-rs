@@ -98,20 +98,47 @@ impl Database {
         Ok(self.conn.last_insert_rowid())
     }
 
-    /// Gets a performer by name
+    /// Gets a performer by name, falling back to word-order-insensitive match
     pub fn get_performer(&self, name: &str) -> Result<Option<Performer>> {
+        // Exact match first
         let mut stmt = self.conn.prepare(
             "SELECT data FROM performers WHERE name = ?1"
         )?;
         let mut rows = stmt.query(params![name])?;
-
         if let Some(row) = rows.next()? {
             let data: String = row.get(0)?;
-            let performer: Performer = serde_json::from_str(&data)?;
-            Ok(Some(performer))
-        } else {
-            Ok(None)
+            return Ok(Some(serde_json::from_str(&data)?));
         }
+
+        // Fallback: all words present in name (any order, case-insensitive)
+        let words: Vec<String> = name.split_whitespace()
+            .map(|w| format!("%{}%", w.to_lowercase()))
+            .collect();
+
+        if words.is_empty() {
+            return Ok(None);
+        }
+
+        let conditions = words.iter()
+            .enumerate()
+            .map(|(i, _)| format!("LOWER(name) LIKE ?{}", i + 1))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+
+        let query = format!("SELECT data FROM performers WHERE {}", conditions);
+        let mut stmt = self.conn.prepare(&query)?;
+
+        let param_refs: Vec<&dyn rusqlite::ToSql> = words.iter()
+            .map(|w| w as &dyn rusqlite::ToSql)
+            .collect();
+
+        let mut rows = stmt.query(param_refs.as_slice())?;
+        if let Some(row) = rows.next()? {
+            let data: String = row.get(0)?;
+            return Ok(Some(serde_json::from_str(&data)?));
+        }
+
+        Ok(None)
     }
 
     /// Gets all performers

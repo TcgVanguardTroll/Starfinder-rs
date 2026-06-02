@@ -7,6 +7,7 @@ mod database;
 mod image_cache;
 mod scraper;
 mod tpdb;
+mod recommender;
 
 use database::Database;
 use models::SearchFilters;
@@ -68,6 +69,14 @@ enum Commands {
         #[arg(default_value = "performers_data.json")]
         file: String,
     },
+    /// Show your taste profile based on liked performers
+    Profile,
+    /// Get performer recommendations based on your profile
+    Recommend {
+        /// How many recommendations to fetch
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+    },
 }
 
 #[tokio::main]
@@ -114,6 +123,12 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Import { file } => {
             import_from_json(&db, &file)?;
+        }
+        Commands::Profile => {
+            show_profile(&db)?;
+        }
+        Commands::Recommend { limit } => {
+            recommend(&db, limit).await?;
         }
     }
 
@@ -280,14 +295,20 @@ async fn view_performer(db: &Database, name: &str, _gallery: bool) -> anyhow::Re
             if let Some(age) = performer.age {
                 println!("  {} {}", "Age:".bright_black(), age);
             }
-            if let Some(eth) = performer.ethnicity {
+            if let Some(eth) = &performer.ethnicity {
                 println!("  {} {}", "Ethnicity:".bright_black(), eth);
             }
-            if let Some(hair) = performer.hair_color {
+            if let Some(hair) = &performer.hair_color {
                 println!("  {} {}", "Hair:".bright_black(), hair);
             }
-            if let Some(meas) = performer.measurements {
+            if let Some(eye) = &performer.eye_color {
+                println!("  {} {}", "Eyes:".bright_black(), eye);
+            }
+            if let Some(meas) = &performer.measurements {
                 println!("  {} {}", "Measurements:".bright_black(), meas);
+            }
+            if let Some(h) = &performer.height {
+                println!("  {} {}", "Height:".bright_black(), h);
             }
             println!();
         }
@@ -325,6 +346,119 @@ fn clear_cache() -> anyhow::Result<()> {
     let cache = image_cache::ImageCache::new()?;
     cache.clear()?;
     println!("{}", "Image cache cleared".green());
+    Ok(())
+}
+
+fn show_profile(db: &Database) -> anyhow::Result<()> {
+    let performers = db.get_all_performers()?;
+
+    if performers.is_empty() {
+        println!("{}", "No performers in database yet. Add some with 'starfinder add'.".yellow());
+        return Ok(());
+    }
+
+    let total = performers.len();
+    let tree = recommender::build_preference_tree(&performers);
+    let path = recommender::dominant_query_path(&tree);
+
+    println!("{}", "Your Taste Profile".bright_cyan().bold());
+    println!("{}", "═".repeat(42).bright_black());
+    println!("{}", format!("  Based on {} liked performers", total).bright_black());
+    println!();
+
+    recommender::print_tree(&tree, "  ", total);
+
+    println!();
+    if path.is_empty() {
+        println!("{}", "  Add more performers to refine your type.".bright_black());
+    } else {
+        println!("{} {}",
+            "  Your type:".bright_black(),
+            path.join(" → ").bright_white().bold()
+        );
+        println!("{}", "  (The deeper the tree, the more specific your recommendations)".bright_black());
+    }
+    println!();
+
+    Ok(())
+}
+
+async fn recommend(db: &Database, limit: usize) -> anyhow::Result<()> {
+    let performers = db.get_all_performers()?;
+
+    if performers.is_empty() {
+        println!("{}", "No performers in database yet. Add some with 'starfinder add'.".yellow());
+        return Ok(());
+    }
+
+    let api_key = std::env::var("TPDB_API_KEY")
+        .context("TPDB_API_KEY not set — needed for recommendations")?;
+
+    let known_names: std::collections::HashSet<String> = performers
+        .iter()
+        .map(|p| p.name.to_lowercase())
+        .collect();
+
+    println!("{}", "Finding performers you might like...".bright_cyan().bold());
+    println!();
+
+    let tree = recommender::build_preference_tree(&performers);
+    let path = recommender::dominant_query_path(&tree);
+
+    let client = TpdbClient::new(api_key);
+    let mut results: Vec<models::Performer> = vec![];
+
+    // Try progressively less specific queries until we have enough results
+    for specificity in (1..=path.len()).rev() {
+        let query = path[..specificity].join(" ");
+        println!("{} {}", "  Trying:".bright_black(), query.bright_white());
+
+        let top_ethnicity = if specificity >= 2 { Some(path[1].as_str()) }
+            else if specificity == 1 { None }
+            else { None };
+
+        let mut found = client.get_recommendations(top_ethnicity, limit * 3).await?;
+        found.retain(|p| !known_names.contains(&p.name.to_lowercase()));
+
+        if !found.is_empty() {
+            results = found;
+            println!("{} {} {}",
+                "  Best match:".bright_black(),
+                path[..specificity].join(" → ").bright_white().bold(),
+                format!("({} results)", results.len()).bright_black()
+            );
+            break;
+        }
+    }
+
+    results.truncate(limit);
+
+    if results.is_empty() {
+        println!("{}", "No new recommendations found. Try adding more performers to refine your profile.".yellow());
+        return Ok(());
+    }
+
+    println!();
+    println!("{}", format!("Top {} Recommendations for you:", results.len()).bright_cyan().bold());
+    println!();
+
+    for (i, p) in results.iter().enumerate() {
+        println!("{}. {} {}",
+            (i + 1).to_string().bright_black(),
+            p.name.bright_white().bold(),
+            format!("({}, {}{})",
+                p.body_type,
+                p.ethnicity.as_deref().unwrap_or("?"),
+                p.measurements.as_ref()
+                    .map(|m| format!(", {}", m))
+                    .unwrap_or_default()
+            ).bright_black()
+        );
+    }
+
+    println!();
+    println!("{}", "Use 'starfinder add <name>' to add any to your profile.".bright_black());
+
     Ok(())
 }
 

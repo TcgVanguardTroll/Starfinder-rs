@@ -40,9 +40,9 @@ struct TpdbExtras {
     age: Option<u32>,
     #[serde(default)]
     ethnicity: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "hair_colour")]
     hair_color: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "eye_colour")]
     eye_color: Option<String>,
     #[serde(default)]
     height: Option<String>,
@@ -136,6 +136,67 @@ impl TpdbClient {
         performer.last_updated = Some(chrono::Utc::now().to_rfc3339());
 
         performer
+    }
+
+    /// Fetch recommended performers using TPDB attribute filters
+    pub async fn get_recommendations(
+        &self,
+        ethnicity: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<Performer>> {
+        // Try attribute filter first (TPDB v0 filter params)
+        let mut url = format!("{}/performers?per_page={}", TPDB_API_BASE, limit * 3);
+        if let Some(eth) = ethnicity {
+            url.push_str(&format!("&ethnicity={}", urlencoding::encode(eth)));
+        }
+
+        log::info!("Fetching recommendations: {}", url);
+
+        let response = self.client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .send()
+            .await
+            .context("Failed to query ThePornDB recommendations")?;
+
+        if response.status().is_success() {
+            let search_result: TpdbSearchResponse = response.json().await
+                .context("Failed to parse TPDB recommendations")?;
+
+            if !search_result.data.is_empty() {
+                return Ok(search_result.data.into_iter()
+                    .map(|p| self.convert_to_performer(p))
+                    .collect());
+            }
+        }
+
+        // Fallback: search by ethnicity keyword
+        if let Some(eth) = ethnicity {
+            let fallback_url = format!(
+                "{}/performers?q={}&per_page={}",
+                TPDB_API_BASE,
+                urlencoding::encode(eth),
+                limit * 3
+            );
+            log::info!("Fallback search: {}", fallback_url);
+
+            let resp = self.client
+                .get(&fallback_url)
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .send()
+                .await
+                .context("Failed fallback TPDB search")?;
+
+            if resp.status().is_success() {
+                let result: TpdbSearchResponse = resp.json().await
+                    .context("Failed to parse fallback response")?;
+                return Ok(result.data.into_iter()
+                    .map(|p| self.convert_to_performer(p))
+                    .collect());
+            }
+        }
+
+        Ok(vec![])
     }
 
     /// Infer body type from cup size, waist-to-hip ratio, and weight
