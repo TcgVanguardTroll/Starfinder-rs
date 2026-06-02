@@ -23,6 +23,8 @@ struct TpdbPerformerResponse {
 
 #[derive(Debug, Deserialize, Serialize)]
 struct TpdbPerformer {
+    #[serde(rename = "_id", default)]
+    numeric_id: i64,
     id: String,
     name: String,
     #[serde(default)]
@@ -53,6 +55,14 @@ struct TpdbExtras {
     weight: Option<String>,
     #[serde(default)]
     measurements: Option<String>,
+    #[serde(default)]
+    cupsize: Option<String>,
+    #[serde(default)]
+    waist: Option<String>,
+    #[serde(default)]
+    hips: Option<String>,
+    #[serde(default)]
+    gender: Option<String>,
 }
 
 impl TpdbClient {
@@ -122,7 +132,14 @@ impl TpdbClient {
 
         performer.body_type = self.infer_body_type(&tpdb);
 
-        performer.age = tpdb.extras.age;
+        performer.age = tpdb.extras.age.or_else(|| {
+            tpdb.extras.birthday.as_deref().and_then(|bd| {
+                let dob = chrono::NaiveDate::parse_from_str(bd, "%Y-%m-%d").ok()?;
+                let today = chrono::Utc::now().date_naive();
+                let years = today.years_since(dob)?;
+                Some(years)
+            })
+        });
         performer.ethnicity = tpdb.extras.ethnicity;
         performer.hair_color = tpdb.extras.hair_color;
         performer.eye_color = tpdb.extras.eye_color;
@@ -134,7 +151,8 @@ impl TpdbClient {
         performer.profile_image_url = tpdb.image.or_else(|| tpdb.images.first().cloned());
         performer.gallery_urls = tpdb.images;
 
-        performer.gender = tpdb.gender;
+        performer.gender = tpdb.gender.or(tpdb.extras.gender);
+        performer.tpdb_id = Some(tpdb.numeric_id);
         performer.source = Some("ThePornDB".to_string());
         performer.source_url = Some(format!("https://theporndb.net/performers/{}", tpdb.id));
         performer.last_updated = Some(chrono::Utc::now().to_rfc3339());
@@ -142,80 +160,99 @@ impl TpdbClient {
         performer
     }
 
-    /// Fetch recommended performers using TPDB attribute filters
+    /// Primary: use /performers/similar?ids=... with liked performer IDs.
+    /// Fallback: filtered search by gender + ethnicity + cup.
     pub async fn get_recommendations(
         &self,
+        liked_ids: &[i64],
         ethnicity: Option<&str>,
+        top_cup: Option<&str>,
         gender_filter: &GenderFilter,
-        limit: usize,
     ) -> Result<Vec<Performer>> {
-        // Try attribute filter first (TPDB v0 filter params)
-        let mut url = format!("{}/performers?per_page={}", TPDB_API_BASE, limit * 3);
-        if let Some(eth) = ethnicity {
-            url.push_str(&format!("&ethnicity={}", urlencoding::encode(eth)));
-        }
-        if let Some(gender) = gender_filter.tpdb_value() {
-            url.push_str(&format!("&gender={}", urlencoding::encode(gender)));
-        }
+        // ── Primary: similar performers ──────────────────────────────────────
+        if !liked_ids.is_empty() {
+            let ids_str = liked_ids.iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            let url = format!("{}/performers/similar?ids={}", TPDB_API_BASE, ids_str);
+            log::info!("Similar performers: {}", url);
 
-        log::info!("Fetching recommendations: {}", url);
+            let resp = self.client.get(&url)
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .send().await;
 
-        let response = self.client
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .send()
-            .await
-            .context("Failed to query ThePornDB recommendations")?;
-
-        if response.status().is_success() {
-            let search_result: TpdbSearchResponse = response.json().await
-                .context("Failed to parse TPDB recommendations")?;
-
-            if !search_result.data.is_empty() {
-                let results: Vec<Performer> = search_result.data.into_iter()
-                    .filter(|p| gender_filter.matches(p.gender.as_deref()))
-                    .map(|p| self.convert_to_performer(p))
-                    .collect();
-                if !results.is_empty() {
-                    return Ok(results);
+            if let Ok(r) = resp {
+                if r.status().is_success() {
+                    if let Ok(result) = r.json::<TpdbSearchResponse>().await {
+                        let performers: Vec<Performer> = result.data.into_iter()
+                            .filter(|p| gender_filter.matches(
+                                p.gender.as_deref().or(p.extras.gender.as_deref())
+                            ))
+                            .map(|p| self.convert_to_performer(p))
+                            .collect();
+                        if !performers.is_empty() {
+                            return Ok(performers);
+                        }
+                    }
                 }
             }
         }
 
-        // Fallback: search by ethnicity keyword
+        // ── Fallback: filtered search ─────────────────────────────────────────
+        let mut url = format!("{}/performers?per_page=100", TPDB_API_BASE);
+        if let Some(g) = gender_filter.tpdb_value() {
+            url.push_str(&format!("&gender={}", g));
+        }
         if let Some(eth) = ethnicity {
-            let fallback_url = format!(
-                "{}/performers?q={}&per_page={}",
-                TPDB_API_BASE,
-                urlencoding::encode(eth),
-                limit * 3
-            );
-            log::info!("Fallback search: {}", fallback_url);
-
-            let resp = self.client
-                .get(&fallback_url)
-                .header("Authorization", format!("Bearer {}", self.api_key))
-                .send()
-                .await
-                .context("Failed fallback TPDB search")?;
-
-            if resp.status().is_success() {
-                let result: TpdbSearchResponse = resp.json().await
-                    .context("Failed to parse fallback response")?;
-                return Ok(result.data.into_iter()
-                    .filter(|p| gender_filter.matches(p.gender.as_deref()))
-                    .map(|p| self.convert_to_performer(p))
-                    .collect());
-            }
+            url.push_str(&format!("&ethnicity={}", urlencoding::encode(&eth.to_uppercase())));
+        }
+        if let Some(cup) = top_cup {
+            url.push_str(&format!("&cup={}", urlencoding::encode(cup)));
         }
 
-        Ok(vec![])
+        log::info!("Fallback search: {}", url);
+
+        let resp = self.client.get(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .send().await
+            .context("Failed to query ThePornDB")?;
+
+        if !resp.status().is_success() {
+            return Ok(vec![]);
+        }
+
+        let result: TpdbSearchResponse = resp.json().await
+            .context("Failed to parse TPDB response")?;
+
+        Ok(result.data.into_iter()
+            .filter(|p| gender_filter.matches(
+                p.gender.as_deref().or(p.extras.gender.as_deref())
+            ))
+            .map(|p| self.convert_to_performer(p))
+            .collect())
     }
 
-    /// Infer body type from cup size, waist-to-hip ratio, and weight
+    /// Infer body type from cup size, waist-to-hip ratio, and weight.
+    /// Prefers direct cupsize/waist/hips fields (available in search results)
+    /// over parsing the measurements string.
     fn infer_body_type(&self, tpdb: &TpdbPerformer) -> String {
-        let cup = tpdb.extras.measurements.as_deref().map(Self::cup_score).unwrap_or(2);
-        let whr = tpdb.extras.measurements.as_deref().and_then(Self::waist_hip_ratio);
+        // Cup score: prefer direct cupsize field, fall back to parsing measurements
+        let cup = tpdb.extras.cupsize.as_deref()
+            .map(Self::cup_score)
+            .or_else(|| tpdb.extras.measurements.as_deref().map(Self::cup_score))
+            .unwrap_or(2);
+
+        // WHR: prefer direct waist/hips fields, fall back to parsing measurements
+        let whr = match (tpdb.extras.waist.as_deref(), tpdb.extras.hips.as_deref()) {
+            (Some(w), Some(h)) => {
+                let waist: f64 = w.parse().unwrap_or(0.0);
+                let hips: f64 = h.parse().unwrap_or(0.0);
+                if hips > 0.0 { Some(waist / hips) } else { None }
+            }
+            _ => tpdb.extras.measurements.as_deref().and_then(Self::waist_hip_ratio),
+        };
+
         let weight = tpdb.extras.weight.as_deref().and_then(Self::parse_weight_lbs);
 
         if weight.map_or(false, |w| w > 180.0) {

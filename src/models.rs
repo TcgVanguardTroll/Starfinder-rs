@@ -20,6 +20,7 @@ pub struct Performer {
     pub profile_image_url: Option<String>,
     pub gallery_urls: Vec<String>,
     pub gender: Option<String>,
+    pub tpdb_id: Option<i64>,
     // Metadata
     pub source: Option<String>,
     pub source_url: Option<String>,
@@ -48,6 +49,7 @@ impl Performer {
             profile_image_url: None,
             gallery_urls: Vec::new(),
             gender: None,
+            tpdb_id: None,
             source: None,
             source_url: None,
             last_updated: None,

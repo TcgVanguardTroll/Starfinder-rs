@@ -16,11 +16,11 @@ impl GenderFilter {
     /// The value sent to TPDB's gender filter param
     pub fn tpdb_value(&self) -> Option<&'static str> {
         match self {
-            GenderFilter::Female     => Some("Female"),
-            GenderFilter::Male       => Some("Male"),
-            GenderFilter::TransFemale => Some("Transgender Female"),
-            GenderFilter::TransMale  => Some("Transgender Male"),
-            GenderFilter::Any        => None,
+            GenderFilter::Female      => Some("FEMALE"),
+            GenderFilter::Male        => Some("MALE"),
+            GenderFilter::TransFemale => Some("TRANSGENDER_FEMALE"),
+            GenderFilter::TransMale   => Some("TRANSGENDER_MALE"),
+            GenderFilter::Any         => None,
         }
     }
 
@@ -30,13 +30,13 @@ impl GenderFilter {
             GenderFilter::Any => true,
             _ => {
                 let Some(g) = gender else { return false };
-                let g = g.to_lowercase();
+                let g = g.to_uppercase();
                 match self {
-                    GenderFilter::Female     => g == "female",
-                    GenderFilter::Male       => g == "male",
-                    GenderFilter::TransFemale => g.contains("transgender") && g.contains("female"),
-                    GenderFilter::TransMale  => g.contains("transgender") && g.contains("male"),
-                    GenderFilter::Any        => true,
+                    GenderFilter::Female      => g == "FEMALE",
+                    GenderFilter::Male        => g == "MALE",
+                    GenderFilter::TransFemale => g == "TRANSGENDER_FEMALE",
+                    GenderFilter::TransMale   => g == "TRANSGENDER_MALE",
+                    GenderFilter::Any         => true,
                 }
             }
         }

@@ -410,60 +410,79 @@ async fn recommend(db: &Database, limit: usize) -> anyhow::Result<()> {
         .map(|p| p.name.to_lowercase())
         .collect();
 
-    println!("{}", "Finding performers you might like...".bright_cyan().bold());
-    println!();
-
     let tree = recommender::build_preference_tree(&performers);
     let path = recommender::dominant_query_path(&tree);
 
+    println!("{}", "Finding performers you might like...".bright_cyan().bold());
+    println!("{} {}",
+        "  Profile:".bright_black(),
+        path.join(" → ").bright_white().bold()
+    );
+    println!();
+
+    // Collect TPDB numeric IDs from liked performers
+    let liked_ids: Vec<i64> = performers.iter()
+        .filter_map(|p| p.tpdb_id)
+        .collect();
+
+    // Top cup size from preferences (most common cup among liked performers)
+    let top_cup = performers.iter()
+        .filter_map(|p| p.measurements.as_deref())
+        .filter_map(|m| {
+            let bust = m.split('-').next()?;
+            let cup = bust.trim_start_matches(|c: char| c.is_ascii_digit());
+            if cup.is_empty() { None } else { Some(cup.to_uppercase()) }
+        })
+        .fold(std::collections::HashMap::<String, usize>::new(), |mut acc, cup| {
+            *acc.entry(cup).or_insert(0) += 1; acc
+        })
+        .into_iter()
+        .max_by_key(|(_, v)| *v)
+        .map(|(cup, _)| cup);
+
+    let top_ethnicity = path.get(1).map(|s| s.as_str());
+
     let client = TpdbClient::new(api_key);
-    let mut results: Vec<models::Performer> = vec![];
+    let pool = client.get_recommendations(
+        &liked_ids,
+        top_ethnicity,
+        top_cup.as_deref(),
+        &cfg.gender_filter,
+    ).await?;
 
-    // Try progressively less specific queries until we have enough results
-    for specificity in (1..=path.len()).rev() {
-        let query = path[..specificity].join(" ");
-        println!("{} {}", "  Trying:".bright_black(), query.bright_white());
+    let mut scored: Vec<(f64, models::Performer)> = pool
+        .into_iter()
+        .filter(|p| !known_names.contains(&p.name.to_lowercase()))
+        .map(|p| (recommender::score_performer(&p, &tree), p))
+        .filter(|(score, _)| *score > 0.0)
+        .collect();
 
-        let top_ethnicity = if specificity >= 2 { Some(path[1].as_str()) }
-            else if specificity == 1 { None }
-            else { None };
+    // Sort best-match first
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(limit);
 
-        let mut found = client.get_recommendations(top_ethnicity, &cfg.gender_filter, limit * 3).await?;
-        found.retain(|p| !known_names.contains(&p.name.to_lowercase()));
-
-        if !found.is_empty() {
-            results = found;
-            println!("{} {} {}",
-                "  Best match:".bright_black(),
-                path[..specificity].join(" → ").bright_white().bold(),
-                format!("({} results)", results.len()).bright_black()
-            );
-            break;
-        }
-    }
-
-    results.truncate(limit);
-
-    if results.is_empty() {
-        println!("{}", "No new recommendations found. Try adding more performers to refine your profile.".yellow());
+    if scored.is_empty() {
+        println!("{}", "No matching recommendations found. Try adding more performers to refine your profile.".yellow());
         return Ok(());
     }
 
-    println!();
-    println!("{}", format!("Top {} Recommendations for you:", results.len()).bright_cyan().bold());
+    println!("{}", format!("Top {} Recommendations for you:", scored.len()).bright_cyan().bold());
     println!();
 
-    for (i, p) in results.iter().enumerate() {
-        println!("{}. {} {}",
+    for (i, (score, p)) in scored.iter().enumerate() {
+        let age_str = p.age
+            .map(|a| format!(", {}", recommender::age_bucket(a)))
+            .unwrap_or_default();
+        println!("{}. {} {}  {}",
             (i + 1).to_string().bright_black(),
             p.name.bright_white().bold(),
-            format!("({}, {}{})",
+            format!("({}, {}{}{})",
                 p.body_type,
                 p.ethnicity.as_deref().unwrap_or("?"),
-                p.measurements.as_ref()
-                    .map(|m| format!(", {}", m))
-                    .unwrap_or_default()
-            ).bright_black()
+                p.hair_color.as_ref().map(|h| format!(", {}", h)).unwrap_or_default(),
+                age_str,
+            ).bright_black(),
+            format!("match {:.0}%", score / 10.0 * 100.0).bright_cyan()
         );
     }
 
