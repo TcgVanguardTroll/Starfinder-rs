@@ -104,6 +104,9 @@ enum Commands {
         /// Target waist measurement in inches (searches ±4 inches)
         #[arg(long)]
         waist: Option<u32>,
+        /// Target waist-to-hip ratio (searches ±0.05), e.g. 0.667 for Dee Siren's build
+        #[arg(long)]
+        whr: Option<f64>,
         /// Minimum age
         #[arg(long)]
         age_min: Option<u32>,
@@ -192,8 +195,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::Recommend { limit } => {
             recommend(&db, limit).await?;
         }
-        Commands::Find { looks_like, body_like, hair, eye, ethnicity, cup, hips, waist, age_min, age_max, limit } => {
-            find(&db, looks_like, body_like, hair, eye, ethnicity, cup, hips, waist, age_min, age_max, limit).await?;
+        Commands::Find { looks_like, body_like, hair, eye, ethnicity, cup, hips, waist, whr, age_min, age_max, limit } => {
+            find(&db, looks_like, body_like, hair, eye, ethnicity, cup, hips, waist, whr, age_min, age_max, limit).await?;
         }
         Commands::Similar { name, limit } => {
             similar(&db, &name, limit).await?;
@@ -502,6 +505,8 @@ async fn recommend(db: &Database, limit: usize) -> anyhow::Result<()> {
 
     let tree = recommender::build_preference_tree(&performers);
     let path = recommender::dominant_query_path(&tree);
+    // IDF weights: rare attributes among your likes count more than universal ones
+    let idf = recommender::compute_idf_weights(&performers);
 
     println!("{}", "Finding performers you might like...".bright_cyan().bold());
     println!("{} {}",
@@ -543,7 +548,7 @@ async fn recommend(db: &Database, limit: usize) -> anyhow::Result<()> {
     let mut scored: Vec<(f64, models::Performer)> = pool
         .into_iter()
         .filter(|p| !known_names.contains(&p.name.to_lowercase()))
-        .map(|p| (recommender::score_performer(&p, &tree), p))
+        .map(|p| (recommender::score_performer_idf(&p, &tree, &idf), p))
         .filter(|(score, _)| *score > 0.0)
         .collect();
 
@@ -592,6 +597,7 @@ async fn find(
     cup_arg:     Option<String>,
     hips_arg:    Option<u32>,
     waist_arg:   Option<u32>,
+    whr_arg:     Option<f64>,
     age_min:     Option<u32>,
     age_max:     Option<u32>,
     limit:       usize,
@@ -606,6 +612,7 @@ async fn find(
     let mut cup       = cup_arg;
     let mut hips      = hips_arg;
     let mut waist     = waist_arg;
+    let mut whr       = whr_arg;
 
     if let Some(ref name) = looks_like {
         let p = db.get_performer(name)?
@@ -639,6 +646,16 @@ async fn find(
                 });
             }
         }
+        // WHR captures the butt/lower-body shape — pull from the reference performer
+        if whr.is_none() {
+            whr = recommender::performer_whr(&p);
+        }
+    }
+
+    // When WHR is active, the standalone waist filter is redundant
+    // (waist = WHR × hips) and would over-constrain — drop it.
+    if whr.is_some() {
+        waist = None;
     }
 
     // ── Display criteria ──────────────────────────────────────────────────
@@ -652,6 +669,7 @@ async fn find(
     if let Some(ref v) = cup         { criteria.push(format!("cup: {}", v.bright_white())); }
     if let Some(v) = hips            { criteria.push(format!("hips: {}\" ±4", v.to_string().bright_white())); }
     if let Some(v) = waist           { criteria.push(format!("waist: {}\" ±4", v.to_string().bright_white())); }
+    if let Some(v) = whr             { criteria.push(format!("waist-to-hip ratio: {:.3} ±0.05 (butt/build shape)", v).bright_white().to_string()); }
     if let Some(v) = age_min         { criteria.push(format!("age ≥ {}", v.to_string().bright_white())); }
     if let Some(v) = age_max         { criteria.push(format!("age ≤ {}", v.to_string().bright_white())); }
     for c in &criteria { println!("  · {}", c); }
@@ -663,20 +681,25 @@ async fn find(
     let client = TpdbClient::new(api_key);
     let mut results = client.search_by_attributes(
         ethnicity.as_deref(), hair.as_deref(), eye.as_deref(),
-        cup.as_deref(), hips, waist, age_min, age_max, &cfg.gender_filter, limit * 5,
+        cup.as_deref(), hips, waist, whr, age_min, age_max, &cfg.gender_filter, limit * 8,
     ).await?;
 
     results.retain(|p| !known_names.contains(&p.name.to_lowercase()));
 
-    // ── Face similarity scoring (if looks_like has a stored embedding) ────
+    // ── Reference vectors for ranking ─────────────────────────────────────
+    // Face embedding from the looks-like performer
     let ref_embedding = looks_like.as_deref()
         .and_then(|name| db.get_embedding(name).ok().flatten());
+    // k-NN body feature vector from the body-like performer
+    let ref_body_vec = body_like.as_deref()
+        .and_then(|name| db.get_performer(name).ok().flatten())
+        .and_then(|p| recommender::feature_vector(&p));
 
-    let mut scored: Vec<(Option<f32>, models::Performer)> = results
+    // Score each candidate: (face_sim, body_sim, performer)
+    let mut scored: Vec<(Option<f32>, Option<f64>, models::Performer)> = results
         .into_iter()
         .map(|p| {
-            let sim = ref_embedding.as_ref().and_then(|ref_emb| {
-                // Use cached embedding if available, otherwise generate on the fly
+            let face = ref_embedding.as_ref().and_then(|ref_emb| {
                 let emb = db.get_embedding(&p.name).ok().flatten()
                     .or_else(|| {
                         p.face_url.as_deref()
@@ -686,16 +709,27 @@ async fn find(
                     });
                 emb.map(|e| embedder::cosine_similarity(ref_emb, &e))
             });
-            (sim, p)
+            let body = ref_body_vec.as_ref().and_then(|rv| {
+                recommender::feature_vector(&p).map(|cv| rv.similarity_pct(&cv))
+            });
+            (face, body, p)
         })
         .collect();
 
-    // Sort by face similarity if available, otherwise keep original order
-    if ref_embedding.is_some() {
+    // Ranking priority: face similarity (looks-like) > body k-NN (body-like) > as-is
+    let sort_mode = if ref_embedding.is_some() {
         scored.sort_by(|a, b| b.0.unwrap_or(-1.0)
             .partial_cmp(&a.0.unwrap_or(-1.0))
             .unwrap_or(std::cmp::Ordering::Equal));
-    }
+        "sorted by face similarity"
+    } else if ref_body_vec.is_some() {
+        scored.sort_by(|a, b| b.1.unwrap_or(-1.0)
+            .partial_cmp(&a.1.unwrap_or(-1.0))
+            .unwrap_or(std::cmp::Ordering::Equal));
+        "sorted by body/build similarity"
+    } else {
+        ""
+    };
 
     scored.truncate(limit);
 
@@ -704,25 +738,31 @@ async fn find(
         return Ok(());
     }
 
-    let using_face_ml = ref_embedding.is_some();
     println!("{}", format!("{} results{}:",
         scored.len(),
-        if using_face_ml { " (sorted by face similarity)" } else { "" }
+        if sort_mode.is_empty() { String::new() } else { format!(" ({})", sort_mode) }
     ).bright_cyan().bold());
     println!();
 
-    for (i, (sim, p)) in scored.iter().enumerate() {
+    for (i, (face, body, p)) in scored.iter().enumerate() {
         let age_str = p.age.map(|a| format!(", {}", recommender::age_bucket(a))).unwrap_or_default();
+        // waist/hips + WHR for build comparison
         let meas_str = p.measurements.as_deref().map(|m| {
             let parts: Vec<&str> = m.split('-').collect();
             if parts.len() >= 3 {
-                format!(", {}w {}h",
+                let whr_str = recommender::performer_whr(p)
+                    .map(|r| format!(" whr {:.2}", r)).unwrap_or_default();
+                format!(", {}w {}h{}",
                     parts[1].trim(),
-                    parts[2].trim().trim_end_matches(|c: char| !c.is_ascii_digit()))
+                    parts[2].trim().trim_end_matches(|c: char| !c.is_ascii_digit()),
+                    whr_str)
             } else { String::new() }
         }).unwrap_or_default();
-        let sim_str = sim.map(|s| format!("  face {:.0}%", embedder::similarity_pct(s)))
-            .unwrap_or_default();
+
+        let mut tags = String::new();
+        if let Some(s) = face { tags.push_str(&format!("  face {:.0}%", embedder::similarity_pct(*s))); }
+        if let Some(b) = body { tags.push_str(&format!("  body {:.0}%", b)); }
+
         println!("{}. {} {}{}",
             (i + 1).to_string().bright_black(),
             p.name.bright_white().bold(),
@@ -734,11 +774,11 @@ async fn find(
                 meas_str,
                 age_str,
             ).bright_black(),
-            sim_str.bright_cyan(),
+            tags.bright_cyan(),
         );
     }
     println!();
-    if !using_face_ml && looks_like.is_some() {
+    if ref_embedding.is_none() && looks_like.is_some() {
         println!("{}", "  Tip: run 'luminary embed' to generate face embeddings for ML-powered face similarity".bright_black());
     }
     println!("{}", "Use 'luminary add <name>' to add any to your profile.".bright_black());

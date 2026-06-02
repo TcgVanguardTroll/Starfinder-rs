@@ -182,6 +182,7 @@ impl TpdbClient {
         cup:           Option<&str>,
         hips_target:   Option<u32>,
         waist_target:  Option<u32>,
+        whr_target:    Option<f64>,
         age_min:       Option<u32>,
         age_max:       Option<u32>,
         gender_filter: &GenderFilter,
@@ -235,7 +236,14 @@ impl TpdbClient {
             .map(|p| self.convert_to_performer(p))
             .collect();
 
-        // Client-side: hip upper bound, waist range, age max
+        // Client-side: WHR range, hip upper bound, waist range, age max
+        if let Some(whr) = whr_target {
+            let tolerance = 0.05;
+            performers.retain(|p| {
+                crate::recommender::performer_whr(p)
+                    .map_or(false, |r| (r - whr).abs() <= tolerance)
+            });
+        }
         if let Some(h) = hips_target {
             let hip_max = h + 4;
             performers.retain(|p| {
