@@ -56,6 +56,10 @@ struct TpdbExtras {
     age: Option<u32>,
     #[serde(default)]
     ethnicity: Option<String>,
+    #[serde(default)]
+    nationality: Option<String>,
+    #[serde(default)]
+    birthplace_code: Option<String>,
     #[serde(default, alias = "hair_colour")]
     hair_color: Option<String>,
     #[serde(default, alias = "eye_colour")]
@@ -187,6 +191,8 @@ impl TpdbClient {
             })
         });
         performer.ethnicity = tpdb.extras.ethnicity;
+        performer.nationality = tpdb.extras.nationality;
+        performer.birthplace_code = tpdb.extras.birthplace_code;
         performer.hair_color = tpdb.extras.hair_color;
         performer.eye_color = tpdb.extras.eye_color;
         performer.height = tpdb.extras.height;

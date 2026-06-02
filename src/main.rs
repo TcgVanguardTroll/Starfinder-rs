@@ -167,6 +167,10 @@ enum Commands {
         /// Require a tattoo at this location, e.g. "lower back" (tramp stamp)
         #[arg(long)]
         tattoo: Option<String>,
+        /// Only performers from a region/nationality group:
+        /// slavic, nordic, latina, asian, western-european
+        #[arg(long)]
+        region: Option<String>,
         /// Match the face only — ignore body, boobs, and tattoo entirely
         #[arg(long, default_value_t = false)]
         face_only: bool,
@@ -306,6 +310,7 @@ async fn main() -> anyhow::Result<()> {
             waist,
             whr,
             tattoo,
+            region,
             face_only,
             images,
             age_min,
@@ -314,7 +319,7 @@ async fn main() -> anyhow::Result<()> {
         } => {
             find(
                 &db, looks_like, body_like, hair, eye, ethnicity, cup, hips, waist, whr, tattoo,
-                face_only, images, age_min, age_max, limit,
+                region, face_only, images, age_min, age_max, limit,
             )
             .await?;
         }
@@ -882,6 +887,7 @@ async fn find(
     waist_arg: Option<u32>,
     whr_arg: Option<f64>,
     tattoo_arg: Option<String>,
+    region: Option<String>,
     face_only: bool,
     images: bool,
     age_min: Option<u32>,
@@ -890,6 +896,17 @@ async fn find(
 ) -> anyhow::Result<()> {
     let cfg = config::Config::load();
     let api_key = cfg.resolve_api_key()?;
+
+    // Validate region up front so a typo fails fast with the valid options.
+    if let Some(ref r) = region {
+        if !luminary::region::known_regions().contains(&r.to_lowercase().as_str()) {
+            anyhow::bail!(
+                "Unknown region '{}'. Options: {}",
+                r,
+                luminary::region::known_regions().join(", ")
+            );
+        }
+    }
 
     // ── Pull attributes from named performers ─────────────────────────────
     let mut ethnicity = eth_arg;
@@ -1018,6 +1035,12 @@ async fn find(
             v.bright_white()
         ));
     }
+    if let Some(ref v) = region {
+        criteria.push(format!(
+            "region: {} (any nationality in the group)",
+            v.bright_white()
+        ));
+    }
     if let Some(v) = age_min {
         criteria.push(format!("age ≥ {}", v.to_string().bright_white()));
     }
@@ -1048,10 +1071,18 @@ async fn find(
             age_min,
             age_max,
             &cfg.gender_filter,
-            limit * 8,
+            // Region filtering keeps only a fraction of the pool, so fetch more.
+            if region.is_some() { 100 } else { limit * 8 },
         )
         .await?;
     results.retain(|p| !known_names.contains(&p.name.to_lowercase()));
+
+    // Region / nationality group filter (e.g. Slavic = Russian, Polish, …)
+    if let Some(ref r) = region {
+        results.retain(|p| {
+            luminary::region::in_region(p.nationality.as_deref(), p.birthplace_code.as_deref(), r)
+        });
+    }
 
     // ── Ranking references ────────────────────────────────────────────────
     let ref_embedding = looks_like
@@ -1213,9 +1244,14 @@ async fn find(
             (i + 1).to_string().bright_black(),
             p.name.bright_white().bold(),
             format!(
-                "({}, {}{}{}{}{})",
+                "({}, {}{}{}{}{}{})",
                 p.body_type,
                 p.ethnicity.as_deref().unwrap_or("?"),
+                p.nationality
+                    .as_ref()
+                    .filter(|n| !n.is_empty())
+                    .map(|n| format!(", {}", n))
+                    .unwrap_or_default(),
                 p.hair_color
                     .as_ref()
                     .map(|h| format!(", {}", h))

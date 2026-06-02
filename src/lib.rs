@@ -16,6 +16,7 @@ pub mod embedder;
 pub mod image_cache;
 pub mod models;
 pub mod recommender;
+pub mod region;
 pub mod scraper;
 pub mod stashdb;
 pub mod tpdb;
