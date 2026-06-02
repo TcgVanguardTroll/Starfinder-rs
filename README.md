@@ -17,9 +17,14 @@ All data — performer profiles, face embeddings, preferences — stays on your 
 
 - **Preference tree** — builds a `body_type → ethnicity → hair → age → eye colour` tree from performers you like, showing percentages at every branch
 - **Smart recommendations** — IDF-weighted scoring that emphasises what's *distinctive* about your taste, not just what's common; body type is a hard gate
-- **Face similarity** — ArcFace embeddings via InsightFace + ONNX Runtime; `find --looks-like` sorts by actual facial geometry
-- **Build similarity** — waist-to-hip ratio (WHR) + k-NN feature vectors find performers with a genuinely similar physique, not just the same cup size
+- **Taste clusters** — k-means over your library finds your *multiple* types; `recommend --by-cluster` surfaces matches for each
+- **Face similarity** — ArcFace embeddings via InsightFace + ONNX Runtime; `find --looks-like` / `face-search` sort by actual facial geometry
+- **Body-frame similarity** — MediaPipe pose vectors (shoulder/hip/leg proportions) over full-body images; `body-search` finds a similar build/silhouette
+- **Body-shape (volume) similarity** — `body-search --shape` reads the body *outline* (waist/hip/thigh fullness) via segmentation — the soft-tissue volume that pose and measurements both miss
+- **Build similarity** — waist-to-hip ratio (WHR) + k-NN feature vectors; `find --body-like` matches physique, not just cup size
 - **Mix-and-match search** — `find --looks-like "A" --body-like "B"` combines one performer's face with another's build
+- **Multi-source images, quality-gated** — gathers from ThePornDB (profile + scene stills) + StashDB + pornpics, then rejects headshots/crops/non-standing frames so a bad image can't skew a result
+- **Cached body index** — `luminary index` precomputes frame + shape vectors for a roster of performers so searches rank against a rich pool instantly
 - **Configurable gender filter** — defaults to biological female; supports trans, male, any
 - **Fully offline after first fetch** — all data cached in SQLite locally
 
@@ -31,10 +36,12 @@ All data — performer profiles, face embeddings, preferences — stays on your 
 |---|---|---|
 | **Rust** (stable) | Build the binary | [rustup.rs](https://rustup.rs) |
 | **ThePornDB API key** | Performer data | [theporndb.net](https://theporndb.net) — free |
-| **Python 3.9+** | Face embeddings (optional) | [python.org](https://python.org) |
-| **InsightFace + ONNX** | ArcFace model (optional) | `pip install insightface onnxruntime` |
+| **Python 3.9+** | Face / body embeddings (optional) | [python.org](https://python.org) |
+| **InsightFace + ONNX** | ArcFace face model (optional) | `pip install insightface onnxruntime opencv-python` |
+| **MediaPipe** | Pose + segmentation for `body-search` (optional) | `pip install mediapipe` |
+| **StashDB API key** | Extra full-body images (optional) | [stashdb.org](https://stashdb.org) — `luminary config stashdb-key <key>` |
 
-Face similarity is optional — all other commands work without Python.
+Face/body similarity is optional — all attribute commands work without Python. `body-search` needs MediaPipe; the richer the image sources you enable (StashDB key, pornpics is keyless), the more clean full-body frames it finds.
 
 ---
 
@@ -180,6 +187,37 @@ luminary embed
 ```
 
 Once embeddings exist, `find --looks-like` automatically re-ranks results by **cosine similarity of 512-dim ArcFace vectors** — actual facial geometry, not just hair/ethnicity attributes. New performers added via `luminary add` are auto-embedded.
+
+`face-search` searches a fresh/cached candidate pool by face:
+
+```powershell
+luminary face-search "Naughty Alysha" [--limit 10] [--images]
+```
+
+### Body & shape search (ML)
+
+```powershell
+pip install mediapipe   # one-time
+
+# Similar build/silhouette (skeletal proportions: shoulder/hip/leg)
+luminary body-search "Christina Sapphire" [--limit 10]
+
+# Similar butt/thigh *volume* (soft-tissue fullness from the body outline)
+luminary body-search "Christina Sapphire" --shape
+```
+
+`body-search` builds the reference's body vector from a combined, **quality-gated** image pool (pornpics + ThePornDB scene stills + StashDB). The gate rejects headshots, cropped frames, and non-standing poses so a bad image can't fabricate a build. Two modes:
+
+- **default (frame)** — MediaPipe pose landmarks → shoulder/hip/torso/leg proportions. *Skeletal* shape.
+- **`--shape` (volume)** — MediaPipe segmentation → waist/hip/thigh silhouette widths. Captures glute & thigh *fullness* that the skeleton and measurements can't see.
+
+### Building the index
+
+```powershell
+luminary index [--limit 500] [--images 18] [--force]
+```
+
+Precomputes both vectors (frame + shape) for a roster of the most-popular performers and caches them in SQLite. After this, `body-search` ranks against that rich pool **instantly** instead of fetching and embedding a fresh pool every run. One-time and **resumable** (re-run to continue; `--force` to rebuild). Without an index, `body-search` falls back to a smaller live StashDB pool.
 
 ### Settings
 

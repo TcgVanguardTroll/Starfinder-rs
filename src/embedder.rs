@@ -365,6 +365,21 @@ mod tests {
     }
 
     #[test]
+    fn extract_field_reads_skips_and_handles_empty() {
+        let arr: Vec<serde_json::Value> = serde_json::from_str(
+            r#"[{"body":[1.0,2.0],"seg":[3.0]},{"error":"no pose"},{"seg":[]}]"#,
+        )
+        .unwrap();
+        // dual entry: both fields present
+        assert_eq!(extract_field(&arr[0], "body"), Some(vec![1.0, 2.0]));
+        assert_eq!(extract_field(&arr[0], "seg"), Some(vec![3.0]));
+        // error entry: field absent
+        assert_eq!(extract_field(&arr[1], "body"), None);
+        // present-but-empty array decodes to None, not Some(vec![])
+        assert_eq!(extract_field(&arr[2], "seg"), None);
+    }
+
+    #[test]
     fn seg_similarity_orders_by_shape_distance() {
         let a = vec![1.0, 1.5, 1.4, 1.4, 1.0]; // curvy reference
         let near = vec![1.05, 1.45, 1.45, 1.35, 0.95]; // similar build

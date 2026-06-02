@@ -480,3 +480,57 @@ impl Database {
         Ok(count)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::Performer;
+
+    #[test]
+    fn body_index_roundtrip_and_count() {
+        let db = Database::new(":memory:").unwrap();
+
+        let mut p = Performer::new("Test Star".to_string());
+        p.measurements = Some("34D-30-42".to_string());
+        db.save_body_index(&p, Some(&[1.0, 2.0, 3.0]), Some(&[0.5, 0.6]), 5)
+            .unwrap();
+        // Second performer: a pose vector but no clean shape frame.
+        db.save_body_index(
+            &Performer::new("No Shape".to_string()),
+            Some(&[9.0]),
+            None,
+            1,
+        )
+        .unwrap();
+
+        assert_eq!(db.body_index_count().unwrap(), 2);
+
+        let names = db.body_indexed_names().unwrap();
+        assert!(names.contains("test star")); // lowercased for resumability
+        assert!(names.contains("no shape"));
+
+        let entries = db.load_body_index().unwrap();
+        let star = entries
+            .iter()
+            .find(|e| e.performer.name == "Test Star")
+            .unwrap();
+        assert_eq!(star.pose, Some(vec![1.0, 2.0, 3.0]));
+        assert_eq!(star.seg, Some(vec![0.5, 0.6]));
+        let no_shape = entries
+            .iter()
+            .find(|e| e.performer.name == "No Shape")
+            .unwrap();
+        assert_eq!(no_shape.pose, Some(vec![9.0]));
+        assert_eq!(no_shape.seg, None);
+    }
+
+    #[test]
+    fn body_index_upsert_replaces() {
+        let db = Database::new(":memory:").unwrap();
+        let p = Performer::new("Dup".to_string());
+        db.save_body_index(&p, Some(&[1.0]), None, 1).unwrap();
+        db.save_body_index(&p, Some(&[2.0]), None, 1).unwrap();
+        assert_eq!(db.body_index_count().unwrap(), 1);
+        assert_eq!(db.load_body_index().unwrap()[0].pose, Some(vec![2.0]));
+    }
+}
