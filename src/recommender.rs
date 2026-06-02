@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use crate::models::{Performer, PreferenceAnalysis};
+use std::collections::HashMap;
 
 // ── Tree ──────────────────────────────────────────────────────────────────────
 
@@ -14,17 +14,20 @@ pub struct PreferenceNode {
 
 impl PreferenceNode {
     pub fn pct(&self) -> f64 {
-        if self.parent_count == 0 { 0.0 }
-        else { self.count as f64 / self.parent_count as f64 * 100.0 }
+        if self.parent_count == 0 {
+            0.0
+        } else {
+            self.count as f64 / self.parent_count as f64 * 100.0
+        }
     }
 }
 
 pub fn age_bucket(age: u32) -> &'static str {
     match age {
-        0..=25  => "18-25",
+        0..=25 => "18-25",
         26..=35 => "26-35",
         36..=45 => "36-45",
-        _       => "46+",
+        _ => "46+",
     }
 }
 
@@ -44,7 +47,9 @@ pub fn build_preference_tree(performers: &[Performer]) -> Vec<PreferenceNode> {
 }
 
 fn build_level(performers: &[Performer], parent_count: usize, depth: usize) -> Vec<PreferenceNode> {
-    if depth >= 5 || performers.is_empty() { return vec![]; }
+    if depth >= 5 || performers.is_empty() {
+        return vec![];
+    }
     let mut groups = group_by_attribute(performers, depth);
     let mut nodes: Vec<PreferenceNode> = groups
         .drain()
@@ -59,34 +64,51 @@ fn build_level(performers: &[Performer], parent_count: usize, depth: usize) -> V
             }
         })
         .collect();
-    nodes.sort_by(|a, b| b.count.cmp(&a.count));
+    nodes.sort_by_key(|n| std::cmp::Reverse(n.count));
     nodes
 }
 
 fn group_by_attribute(performers: &[Performer], depth: usize) -> HashMap<String, Vec<Performer>> {
     let mut map: HashMap<String, Vec<Performer>> = HashMap::new();
     for p in performers {
-        map.entry(attribute_label(p, depth)).or_default().push(p.clone());
+        map.entry(attribute_label(p, depth))
+            .or_default()
+            .push(p.clone());
     }
     map
 }
 
 fn attribute_name(depth: usize) -> &'static str {
     match depth {
-        0 => "body_type", 1 => "ethnicity", 2 => "hair_color",
-        3 => "age_range",  4 => "eye_color",  _ => "unknown",
+        0 => "body_type",
+        1 => "ethnicity",
+        2 => "hair_color",
+        3 => "age_range",
+        4 => "eye_color",
+        _ => "unknown",
     }
 }
 
 pub fn print_tree(nodes: &[PreferenceNode], prefix: &str, total: usize) {
     for (i, node) in nodes.iter().enumerate() {
-        let is_last      = i == nodes.len() - 1;
-        let connector    = if is_last { "└──" } else { "├──" };
+        let is_last = i == nodes.len() - 1;
+        let connector = if is_last { "└──" } else { "├──" };
         let child_prefix = if is_last { "    " } else { "│   " };
-        println!("{}{} {} {}/{}  {:.0}%",
-            prefix, connector, node.label, node.count, total, node.pct());
+        println!(
+            "{}{} {} {}/{}  {:.0}%",
+            prefix,
+            connector,
+            node.label,
+            node.count,
+            total,
+            node.pct()
+        );
         if !node.children.is_empty() {
-            print_tree(&node.children, &format!("{}{}", prefix, child_prefix), node.count);
+            print_tree(
+                &node.children,
+                &format!("{}{}", prefix, child_prefix),
+                node.count,
+            );
         }
     }
 }
@@ -94,12 +116,13 @@ pub fn print_tree(nodes: &[PreferenceNode], prefix: &str, total: usize) {
 pub fn dominant_query_path(nodes: &[PreferenceNode]) -> Vec<String> {
     let mut path = vec![];
     let mut current = nodes;
-    loop {
-        let Some(best) = current.first() else { break };
-        if best.pct() < 50.0 && !path.is_empty() { break; }
+    // Stops naturally when a node has no children (first() returns None).
+    while let Some(best) = current.first() {
+        if best.pct() < 50.0 && !path.is_empty() {
+            break;
+        }
         path.push(best.label.clone());
         current = &best.children;
-        if current.is_empty() { break; }
     }
     path
 }
@@ -110,12 +133,18 @@ pub fn dominant_query_path(nodes: &[PreferenceNode]) -> Vec<String> {
 pub fn performer_whr(p: &Performer) -> Option<f64> {
     let m = p.measurements.as_deref()?;
     let parts: Vec<&str> = m.split('-').collect();
-    if parts.len() < 3 { return None; }
+    if parts.len() < 3 {
+        return None;
+    }
     let waist: f64 = parts[1].trim().parse().ok()?;
-    let hips: f64 = parts[2].trim()
+    let hips: f64 = parts[2]
+        .trim()
         .trim_end_matches(|c: char| !c.is_ascii_digit())
-        .parse().ok()?;
-    if hips == 0.0 { return None; }
+        .parse()
+        .ok()?;
+    if hips == 0.0 {
+        return None;
+    }
     Some((waist / hips * 1000.0).round() / 1000.0)
 }
 
@@ -130,10 +159,10 @@ pub fn performer_whr(p: &Performer) -> Option<f64> {
 
 #[derive(Debug, Clone)]
 pub struct IdfWeights {
-    pub body_type:  HashMap<String, f64>,
-    pub ethnicity:  HashMap<String, f64>,
+    pub body_type: HashMap<String, f64>,
+    pub ethnicity: HashMap<String, f64>,
     pub hair_color: HashMap<String, f64>,
-    pub eye_color:  HashMap<String, f64>,
+    pub eye_color: HashMap<String, f64>,
     pub age_bucket: HashMap<String, f64>,
 }
 
@@ -145,19 +174,28 @@ pub fn compute_idf_weights(performers: &[Performer]) -> IdfWeights {
         for v in vals.into_iter().flatten() {
             *counts.entry(v).or_insert(0) += 1;
         }
-        counts.into_iter()
+        counts
+            .into_iter()
             .map(|(k, df)| (k, (n / df as f64).ln() + 1.0))
             .collect()
     };
 
     IdfWeights {
-        body_type:  idf_map(performers.iter().map(|p| Some(p.body_type.clone())).collect()),
-        ethnicity:  idf_map(performers.iter().map(|p| p.ethnicity.clone()).collect()),
+        body_type: idf_map(
+            performers
+                .iter()
+                .map(|p| Some(p.body_type.clone()))
+                .collect(),
+        ),
+        ethnicity: idf_map(performers.iter().map(|p| p.ethnicity.clone()).collect()),
         hair_color: idf_map(performers.iter().map(|p| p.hair_color.clone()).collect()),
-        eye_color:  idf_map(performers.iter().map(|p| p.eye_color.clone()).collect()),
-        age_bucket: idf_map(performers.iter().map(|p| {
-            p.age.map(|a| age_bucket(a).to_string())
-        }).collect()),
+        eye_color: idf_map(performers.iter().map(|p| p.eye_color.clone()).collect()),
+        age_bucket: idf_map(
+            performers
+                .iter()
+                .map(|p| p.age.map(|a| age_bucket(a).to_string()))
+                .collect(),
+        ),
     }
 }
 
@@ -170,9 +208,15 @@ pub fn score_performer_idf(
 ) -> f64 {
     // Hard gate: body type must match
     let bt_node = tree.iter().find(|n| n.label == performer.body_type);
-    let Some(bt_node) = bt_node else { return 0.0; };
+    let Some(bt_node) = bt_node else {
+        return 0.0;
+    };
 
-    let bt_idf = idf.body_type.get(&performer.body_type).copied().unwrap_or(1.0);
+    let bt_idf = idf
+        .body_type
+        .get(&performer.body_type)
+        .copied()
+        .unwrap_or(1.0);
     let mut score = bt_node.pct() / 100.0 * bt_idf * 3.0;
 
     let eth = performer.ethnicity.as_deref().unwrap_or("Unknown");
@@ -183,7 +227,9 @@ pub fn score_performer_idf(
         if let Some(age) = performer.age {
             let bucket = age_bucket(age);
             let age_idf = idf.age_bucket.get(bucket).copied().unwrap_or(1.0);
-            let age_node = eth_node.children.iter()
+            let age_node = eth_node
+                .children
+                .iter()
                 .flat_map(|h| h.children.iter())
                 .find(|n| n.label == bucket);
             if let Some(age_node) = age_node {
@@ -198,7 +244,9 @@ pub fn score_performer_idf(
 
             let eye = performer.eye_color.as_deref().unwrap_or("Unknown");
             let eye_idf = idf.eye_color.get(eye).copied().unwrap_or(1.0);
-            let eye_node = hair_node.children.iter()
+            let eye_node = hair_node
+                .children
+                .iter()
                 .flat_map(|n| n.children.iter())
                 .find(|n| n.label == eye);
             if let Some(eye_node) = eye_node {
@@ -219,36 +267,51 @@ pub fn score_performer_idf(
 // Euclidean distance in this space = physical similarity.
 
 fn cup_score_f64(p: &Performer) -> f64 {
-    let s = p.measurements.as_deref()
+    let s = p
+        .measurements
+        .as_deref()
         .map(|m| {
             let bust = m.split('-').next().unwrap_or("");
             let cup = bust.trim_start_matches(|c: char| c.is_ascii_digit());
             match cup.to_uppercase().as_str() {
-                "AA" | "AAA" => 0, "A" => 1, "B" => 2, "C" => 3,
-                "D" => 4, "DD" | "E" => 5, "DDD" | "F" => 6, _ => 2,
+                "AA" | "AAA" => 0,
+                "A" => 1,
+                "B" => 2,
+                "C" => 3,
+                "D" => 4,
+                "DD" | "E" => 5,
+                "DDD" | "F" => 6,
+                _ => 2,
             }
         })
         .unwrap_or(2) as f64;
-    s / 6.0  // normalise 0–1
+    s / 6.0 // normalise 0–1
 }
 
 fn hip_f64(p: &Performer) -> Option<f64> {
     let m = p.measurements.as_deref()?;
     let parts: Vec<&str> = m.split('-').collect();
-    let hips: f64 = parts.get(2)?
-        .trim().trim_end_matches(|c: char| !c.is_ascii_digit())
-        .parse().ok()?;
+    let hips: f64 = parts
+        .get(2)?
+        .trim()
+        .trim_end_matches(|c: char| !c.is_ascii_digit())
+        .parse()
+        .ok()?;
     // normalise: typical range 28–48 inches
     Some(((hips - 28.0) / 20.0).clamp(0.0, 1.0))
 }
 
 fn age_f64(p: &Performer) -> f64 {
-    p.age.map(|a| ((a as f64 - 18.0) / 52.0).clamp(0.0, 1.0)).unwrap_or(0.5)
+    p.age
+        .map(|a| ((a as f64 - 18.0) / 52.0).clamp(0.0, 1.0))
+        .unwrap_or(0.5)
 }
 
 fn str_to_id(val: Option<&str>, options: &[&str]) -> f64 {
     let v = val.unwrap_or("Unknown");
-    options.iter().position(|&o| o == v)
+    options
+        .iter()
+        .position(|&o| o == v)
         .map(|i| i as f64 / (options.len() - 1).max(1) as f64)
         .unwrap_or(0.5)
 }
@@ -262,26 +325,42 @@ pub fn feature_vector(p: &Performer) -> Option<FeatureVec> {
     let age = age_f64(p);
     let inv_whr = (1.0 - whr.clamp(0.5, 1.0) / 0.5).clamp(0.0, 1.0);
 
-    let eth = str_to_id(p.ethnicity.as_deref(),
-        &["Asian","Black","Caucasian","Indian","Latin","Middle Eastern","Mixed"]);
-    let hair = str_to_id(p.hair_color.as_deref(),
-        &["Auburn","Bald","Black","Blonde","Brunette","Grey","Red","White"]);
-    let eye = str_to_id(p.eye_color.as_deref(),
-        &["Blue","Brown","Green","Grey","Hazel","Red"]);
+    let eth = str_to_id(
+        p.ethnicity.as_deref(),
+        &[
+            "Asian",
+            "Black",
+            "Caucasian",
+            "Indian",
+            "Latin",
+            "Middle Eastern",
+            "Mixed",
+        ],
+    );
+    let hair = str_to_id(
+        p.hair_color.as_deref(),
+        &[
+            "Auburn", "Bald", "Black", "Blonde", "Brunette", "Grey", "Red", "White",
+        ],
+    );
+    let eye = str_to_id(
+        p.eye_color.as_deref(),
+        &["Blue", "Brown", "Green", "Grey", "Hazel", "Red"],
+    );
 
     // Weights: WHR and hips most important for "similar butt/build"
     Some(FeatureVec {
         name: p.name.clone(),
         // physique dims (higher weight via repetition)
         values: vec![
-            inv_whr * 3.0,  // WHR × 3 — most important for butt/lower body shape
-            hip    * 2.0,   // hip size × 2
-            cup    * 1.5,   // cup × 1.5
-            age    * 1.0,   // age
+            inv_whr * 3.0, // WHR × 3 — most important for butt/lower body shape
+            hip * 2.0,     // hip size × 2
+            cup * 1.5,     // cup × 1.5
+            age * 1.0,     // age
             // appearance dims (lower weight)
-            eth    * 0.5,
-            hair   * 0.3,
-            eye    * 0.2,
+            eth * 0.5,
+            hair * 0.3,
+            eye * 0.2,
         ],
     })
 }
@@ -294,7 +373,9 @@ pub struct FeatureVec {
 
 impl FeatureVec {
     pub fn distance(&self, other: &FeatureVec) -> f64 {
-        self.values.iter().zip(other.values.iter())
+        self.values
+            .iter()
+            .zip(other.values.iter())
             .map(|(a, b)| (a - b).powi(2))
             .sum::<f64>()
             .sqrt()
@@ -319,7 +400,9 @@ impl FeatureVec {
 
 pub fn score_performer(performer: &Performer, tree: &[PreferenceNode]) -> f64 {
     let bt_node = tree.iter().find(|n| n.label == performer.body_type);
-    let Some(bt_node) = bt_node else { return 0.0; };
+    let Some(bt_node) = bt_node else {
+        return 0.0;
+    };
     let mut score = bt_node.pct() / 100.0 * 5.0;
     let eth = performer.ethnicity.as_deref().unwrap_or("Unknown");
     let eth_node = bt_node.children.iter().find(|n| n.label == eth);
@@ -327,19 +410,27 @@ pub fn score_performer(performer: &Performer, tree: &[PreferenceNode]) -> f64 {
         score += eth_node.pct() / 100.0 * 3.0;
         if let Some(age) = performer.age {
             let bucket = age_bucket(age);
-            let age_node = eth_node.children.iter()
+            let age_node = eth_node
+                .children
+                .iter()
                 .flat_map(|h| h.children.iter())
                 .find(|n| n.label == bucket);
-            if let Some(age_node) = age_node { score += age_node.pct() / 100.0 * 2.0; }
+            if let Some(age_node) = age_node {
+                score += age_node.pct() / 100.0 * 2.0;
+            }
         }
         let hair = performer.hair_color.as_deref().unwrap_or("Unknown");
         if let Some(hair_node) = eth_node.children.iter().find(|n| n.label == hair) {
             score += hair_node.pct() / 100.0 * 0.5;
             let eye = performer.eye_color.as_deref().unwrap_or("Unknown");
-            let eye_node = hair_node.children.iter()
+            let eye_node = hair_node
+                .children
+                .iter()
                 .flat_map(|n| n.children.iter())
                 .find(|n| n.label == eye);
-            if let Some(eye_node) = eye_node { score += eye_node.pct() / 100.0 * 0.3; }
+            if let Some(eye_node) = eye_node {
+                score += eye_node.pct() / 100.0 * 0.3;
+            }
         }
     }
     score
@@ -347,28 +438,36 @@ pub fn score_performer(performer: &Performer, tree: &[PreferenceNode]) -> f64 {
 
 pub fn score_against(candidate: &Performer, reference: &Performer) -> f64 {
     let mut score = 0.0;
-    let mut max   = 0.0;
+    let mut max = 0.0;
 
     // A dimension only counts toward the max when it's actually applicable
     // (the reference has the data), so missing data never penalises a match
     // and an identical performer scores a clean 100%.
 
     // Build / physique — always present
-    max += 5.0; if candidate.body_type == reference.body_type { score += 5.0; }
+    max += 5.0;
+    if candidate.body_type == reference.body_type {
+        score += 5.0;
+    }
 
     // Bust: cup size match (only when reference has a cup)
     if let Some(rc) = cup_letter(reference) {
         max += 2.0;
         if let Some(cc) = cup_letter(candidate) {
-            if rc == cc { score += 2.0; }
-            else if cup_rank(&rc).abs_diff(cup_rank(&cc)) == 1 { score += 1.0; }
+            if rc == cc {
+                score += 2.0;
+            } else if cup_rank(&rc).abs_diff(cup_rank(&cc)) == 1 {
+                score += 1.0;
+            }
         }
     }
 
     // Natural vs enhanced (only when reference knows)
     if reference.fake_boobs.is_some() {
         max += 1.0;
-        if candidate.fake_boobs == reference.fake_boobs { score += 1.0; }
+        if candidate.fake_boobs == reference.fake_boobs {
+            score += 1.0;
+        }
     }
 
     // WHR / butt shape (only when reference has measurements)
@@ -376,8 +475,11 @@ pub fn score_against(candidate: &Performer, reference: &Performer) -> f64 {
         max += 2.0;
         if let Some(cw) = performer_whr(candidate) {
             let diff = (rw - cw).abs();
-            if diff <= 0.03 { score += 2.0; }
-            else if diff <= 0.06 { score += 1.0; }
+            if diff <= 0.03 {
+                score += 2.0;
+            } else if diff <= 0.06 {
+                score += 1.0;
+            }
         }
     }
 
@@ -389,63 +491,98 @@ pub fn score_against(candidate: &Performer, reference: &Performer) -> f64 {
 
     // Demographics
     if reference.ethnicity.is_some() {
-        max += 3.0; if candidate.ethnicity == reference.ethnicity { score += 3.0; }
+        max += 3.0;
+        if candidate.ethnicity == reference.ethnicity {
+            score += 3.0;
+        }
     }
     if reference.age.is_some() {
         max += 2.0;
         if let (Some(ca), Some(ra)) = (candidate.age, reference.age) {
-            if age_bucket(ca) == age_bucket(ra) { score += 2.0; }
+            if age_bucket(ca) == age_bucket(ra) {
+                score += 2.0;
+            }
         }
     }
     if reference.hair_color.is_some() {
-        max += 1.0; if candidate.hair_color == reference.hair_color { score += 1.0; }
+        max += 1.0;
+        if candidate.hair_color == reference.hair_color {
+            score += 1.0;
+        }
     }
     if reference.eye_color.is_some() {
-        max += 0.5; if candidate.eye_color == reference.eye_color { score += 0.5; }
+        max += 0.5;
+        if candidate.eye_color == reference.eye_color {
+            score += 0.5;
+        }
     }
 
-    if max == 0.0 { return 0.0; }
+    if max == 0.0 {
+        return 0.0;
+    }
     (score / max * 100.0_f64).round()
 }
 
 /// Extracts the cup letter(s) from measurements, e.g. "36DD-27-38" → "DD"
 pub fn cup_letter(p: &Performer) -> Option<String> {
     let bust = p.measurements.as_deref()?.split('-').next()?;
-    let cup = bust.trim_start_matches(|c: char| c.is_ascii_digit()).to_uppercase();
-    if cup.is_empty() { None } else { Some(cup) }
+    let cup = bust
+        .trim_start_matches(|c: char| c.is_ascii_digit())
+        .to_uppercase();
+    if cup.is_empty() {
+        None
+    } else {
+        Some(cup)
+    }
 }
 
 fn cup_rank(cup: &str) -> u32 {
     match cup {
-        "AA" | "AAA" => 0, "A" => 1, "B" => 2, "C" => 3,
-        "D" => 4, "DD" | "E" => 5, "DDD" | "F" => 6,
-        "G" | "H" | "I" | "J" | "K" => 7, _ => 2,
+        "AA" | "AAA" => 0,
+        "A" => 1,
+        "B" => 2,
+        "C" => 3,
+        "D" => 4,
+        "DD" | "E" => 5,
+        "DDD" | "F" => 6,
+        "G" | "H" | "I" | "J" | "K" => 7,
+        _ => 2,
     }
 }
 
 /// Parses a semicolon-delimited tattoo string into normalised location tokens.
 pub fn parse_tattoos(s: Option<&str>) -> Vec<String> {
-    s.map(|t| t.split(';')
-        .map(|x| x.trim().to_lowercase())
-        .filter(|x| !x.is_empty())
-        .collect())
-        .unwrap_or_default()
+    s.map(|t| {
+        t.split(';')
+            .map(|x| x.trim().to_lowercase())
+            .filter(|x| !x.is_empty())
+            .collect()
+    })
+    .unwrap_or_default()
 }
 
 /// Jaccard similarity (0–1) between two performers' tattoo location sets.
 pub fn tattoo_overlap(a: Option<&str>, b: Option<&str>) -> f64 {
     let sa = parse_tattoos(a);
     let sb = parse_tattoos(b);
-    if sa.is_empty() || sb.is_empty() { return 0.0; }
+    if sa.is_empty() || sb.is_empty() {
+        return 0.0;
+    }
     let intersection = sa.iter().filter(|x| sb.contains(x)).count();
     let union = sa.len() + sb.len() - intersection;
-    if union == 0 { 0.0 } else { intersection as f64 / union as f64 }
+    if union == 0 {
+        0.0
+    } else {
+        intersection as f64 / union as f64
+    }
 }
 
 /// True if a performer has a tattoo whose location contains the keyword.
 pub fn has_tattoo(p: &Performer, keyword: &str) -> bool {
     let kw = keyword.to_lowercase();
-    parse_tattoos(p.tattoos.as_deref()).iter().any(|t| t.contains(&kw))
+    parse_tattoos(p.tattoos.as_deref())
+        .iter()
+        .any(|t| t.contains(&kw))
 }
 
 // ── Flat analysis ─────────────────────────────────────────────────────────────
@@ -457,19 +594,37 @@ pub fn analyze_preferences(performers: &[Performer]) -> PreferenceAnalysis {
     let mut categories: HashMap<String, usize> = HashMap::new();
     let mut ages: Vec<u32> = Vec::new();
     for p in performers {
-        if !p.body_type.is_empty() { *body_types.entry(p.body_type.clone()).or_insert(0) += 1; }
-        if let Some(ref e) = p.ethnicity  { *ethnicities.entry(e.clone()).or_insert(0) += 1; }
-        if let Some(ref h) = p.hair_color { *hair_colors.entry(h.clone()).or_insert(0) += 1; }
-        for cat in &p.categories { *categories.entry(cat.clone()).or_insert(0) += 1; }
-        if let Some(a) = p.age { ages.push(a); }
+        if !p.body_type.is_empty() {
+            *body_types.entry(p.body_type.clone()).or_insert(0) += 1;
+        }
+        if let Some(ref e) = p.ethnicity {
+            *ethnicities.entry(e.clone()).or_insert(0) += 1;
+        }
+        if let Some(ref h) = p.hair_color {
+            *hair_colors.entry(h.clone()).or_insert(0) += 1;
+        }
+        for cat in &p.categories {
+            *categories.entry(cat.clone()).or_insert(0) += 1;
+        }
+        if let Some(a) = p.age {
+            ages.push(a);
+        }
     }
     let sort_map = |map: HashMap<String, usize>| -> Vec<(String, usize)> {
         let mut v: Vec<_> = map.into_iter().collect();
-        v.sort_by(|a, b| b.1.cmp(&a.1));
+        v.sort_by_key(|x| std::cmp::Reverse(x.1));
         v
     };
-    let age_range    = if ages.is_empty() { (0, 0) } else { (*ages.iter().min().unwrap(), *ages.iter().max().unwrap()) };
-    let average_age  = if ages.is_empty() { 0.0 } else { ages.iter().sum::<u32>() as f64 / ages.len() as f64 };
+    let age_range = if ages.is_empty() {
+        (0, 0)
+    } else {
+        (*ages.iter().min().unwrap(), *ages.iter().max().unwrap())
+    };
+    let average_age = if ages.is_empty() {
+        0.0
+    } else {
+        ages.iter().sum::<u32>() as f64 / ages.len() as f64
+    };
     PreferenceAnalysis {
         common_body_types: sort_map(body_types),
         common_ethnicities: sort_map(ethnicities),
@@ -485,16 +640,24 @@ mod tests {
     use super::*;
 
     /// Build a performer with the fields the algorithms care about.
-    fn perf(name: &str, body: &str, eth: &str, hair: &str, eye: &str,
-            age: u32, measurements: &str, tattoos: Option<&str>) -> Performer {
+    fn perf(
+        name: &str,
+        body: &str,
+        eth: &str,
+        hair: &str,
+        eye: &str,
+        age: u32,
+        measurements: &str,
+        tattoos: Option<&str>,
+    ) -> Performer {
         let mut p = Performer::new(name.to_string());
-        p.body_type   = body.to_string();
-        p.ethnicity   = Some(eth.to_string());
-        p.hair_color  = Some(hair.to_string());
-        p.eye_color   = Some(eye.to_string());
-        p.age         = Some(age);
+        p.body_type = body.to_string();
+        p.ethnicity = Some(eth.to_string());
+        p.hair_color = Some(hair.to_string());
+        p.eye_color = Some(eye.to_string());
+        p.age = Some(age);
         p.measurements = Some(measurements.to_string());
-        p.tattoos     = tattoos.map(|s| s.to_string());
+        p.tattoos = tattoos.map(|s| s.to_string());
         p
     }
 
@@ -508,7 +671,16 @@ mod tests {
 
     #[test]
     fn whr_from_measurements() {
-        let dee = perf("Dee", "Curvy", "Caucasian", "Blonde", "Brown", 40, "34B-24-36", None);
+        let dee = perf(
+            "Dee",
+            "Curvy",
+            "Caucasian",
+            "Blonde",
+            "Brown",
+            40,
+            "34B-24-36",
+            None,
+        );
         // 24 / 36 = 0.667
         assert_eq!(performer_whr(&dee), Some(0.667));
 
@@ -519,9 +691,27 @@ mod tests {
 
     #[test]
     fn cup_extraction() {
-        let p = perf("a", "Curvy", "Caucasian", "Blonde", "Green", 50, "36DD-27-38", None);
+        let p = perf(
+            "a",
+            "Curvy",
+            "Caucasian",
+            "Blonde",
+            "Green",
+            50,
+            "36DD-27-38",
+            None,
+        );
         assert_eq!(cup_letter(&p), Some("DD".to_string()));
-        let b = perf("b", "Curvy", "Caucasian", "Blonde", "Green", 50, "34B-24-36", None);
+        let b = perf(
+            "b",
+            "Curvy",
+            "Caucasian",
+            "Blonde",
+            "Green",
+            50,
+            "34B-24-36",
+            None,
+        );
         assert_eq!(cup_letter(&b), Some("B".to_string()));
     }
 
@@ -539,8 +729,16 @@ mod tests {
 
     #[test]
     fn has_tattoo_keyword() {
-        let p = perf("a", "Curvy", "Caucasian", "Blonde", "Green", 50,
-            "36DD-27-38", Some("back of neck; Lower back"));
+        let p = perf(
+            "a",
+            "Curvy",
+            "Caucasian",
+            "Blonde",
+            "Green",
+            50,
+            "36DD-27-38",
+            Some("back of neck; Lower back"),
+        );
         assert!(has_tattoo(&p, "lower back"));
         assert!(has_tattoo(&p, "neck"));
         assert!(!has_tattoo(&p, "ankle"));
@@ -549,9 +747,36 @@ mod tests {
     #[test]
     fn similar_butt_scores_high() {
         // Two performers with near-identical WHR + cup should score highly.
-        let dee   = perf("Dee",  "Curvy", "Caucasian", "Blonde", "Brown", 40, "34B-24-36", None);
-        let twin  = perf("Twin", "Curvy", "Caucasian", "Blonde", "Brown", 41, "34B-24-36", None);
-        let other = perf("Diff", "Slim",  "Asian",     "Black",  "Brown", 22, "32A-26-34", None);
+        let dee = perf(
+            "Dee",
+            "Curvy",
+            "Caucasian",
+            "Blonde",
+            "Brown",
+            40,
+            "34B-24-36",
+            None,
+        );
+        let twin = perf(
+            "Twin",
+            "Curvy",
+            "Caucasian",
+            "Blonde",
+            "Brown",
+            41,
+            "34B-24-36",
+            None,
+        );
+        let other = perf(
+            "Diff",
+            "Slim",
+            "Asian",
+            "Black",
+            "Brown",
+            22,
+            "32A-26-34",
+            None,
+        );
         assert!(score_against(&twin, &dee) > score_against(&other, &dee));
         assert_eq!(score_against(&dee, &dee), 100.0); // identical = perfect
     }
@@ -560,9 +785,36 @@ mod tests {
     fn idf_downweights_universal_attributes() {
         // All curvy → body_type IDF should be the minimum (ln(1)+1 = 1.0)
         let people = vec![
-            perf("a", "Curvy", "Caucasian", "Blonde",   "Green", 50, "36DD-27-38", None),
-            perf("b", "Curvy", "Caucasian", "Brunette", "Blue",  50, "34C-26-36", None),
-            perf("c", "Curvy", "Latin",     "Blonde",   "Brown", 30, "34D-25-36", None),
+            perf(
+                "a",
+                "Curvy",
+                "Caucasian",
+                "Blonde",
+                "Green",
+                50,
+                "36DD-27-38",
+                None,
+            ),
+            perf(
+                "b",
+                "Curvy",
+                "Caucasian",
+                "Brunette",
+                "Blue",
+                50,
+                "34C-26-36",
+                None,
+            ),
+            perf(
+                "c",
+                "Curvy",
+                "Latin",
+                "Blonde",
+                "Brown",
+                30,
+                "34D-25-36",
+                None,
+            ),
         ];
         let idf = compute_idf_weights(&people);
         // Curvy appears in all 3 → idf = ln(3/3)+1 = 1.0
@@ -573,9 +825,36 @@ mod tests {
 
     #[test]
     fn feature_vector_distance_orders_by_build() {
-        let dee  = perf("Dee",  "Curvy", "Caucasian", "Blonde", "Brown", 40, "34B-24-36", None);
-        let near = perf("Near", "Curvy", "Caucasian", "Blonde", "Brown", 40, "34B-25-36", None);
-        let far  = perf("Far",  "Slim",  "Asian",     "Black",  "Brown", 22, "32A-28-32", None);
+        let dee = perf(
+            "Dee",
+            "Curvy",
+            "Caucasian",
+            "Blonde",
+            "Brown",
+            40,
+            "34B-24-36",
+            None,
+        );
+        let near = perf(
+            "Near",
+            "Curvy",
+            "Caucasian",
+            "Blonde",
+            "Brown",
+            40,
+            "34B-25-36",
+            None,
+        );
+        let far = perf(
+            "Far",
+            "Slim",
+            "Asian",
+            "Black",
+            "Brown",
+            22,
+            "32A-28-32",
+            None,
+        );
         let (vd, vn, vf) = (
             feature_vector(&dee).unwrap(),
             feature_vector(&near).unwrap(),
@@ -588,9 +867,36 @@ mod tests {
     #[test]
     fn preference_tree_dominant_path() {
         let people = vec![
-            perf("a", "Curvy", "Caucasian", "Blonde", "Green", 50, "36DD-27-38", None),
-            perf("b", "Curvy", "Caucasian", "Blonde", "Blue",  50, "34DD-26-36", None),
-            perf("c", "Curvy", "Caucasian", "Blonde", "Green", 50, "34D-25-36", None),
+            perf(
+                "a",
+                "Curvy",
+                "Caucasian",
+                "Blonde",
+                "Green",
+                50,
+                "36DD-27-38",
+                None,
+            ),
+            perf(
+                "b",
+                "Curvy",
+                "Caucasian",
+                "Blonde",
+                "Blue",
+                50,
+                "34DD-26-36",
+                None,
+            ),
+            perf(
+                "c",
+                "Curvy",
+                "Caucasian",
+                "Blonde",
+                "Green",
+                50,
+                "34D-25-36",
+                None,
+            ),
         ];
         let tree = build_preference_tree(&people);
         let path = dominant_query_path(&tree);

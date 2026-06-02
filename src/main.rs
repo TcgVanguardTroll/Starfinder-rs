@@ -1,21 +1,18 @@
+// CLI command handlers naturally take many args (one per flag), and the
+// scored-result tuples are intentionally inline rather than newtype'd.
+#![allow(clippy::too_many_arguments, clippy::type_complexity)]
+
+use anyhow::Context;
 use clap::{Parser, Subcommand};
 use colored::*;
-use anyhow::Context;
 
-mod models;
-mod database;
-mod image_cache;
-mod scraper;
-mod tpdb;
-mod recommender;
-mod config;
-mod embedder;
-
-use database::Database;
-use models::SearchFilters;
-use scraper::Scraper;
-use tpdb::TpdbClient;
-use image_cache::ImageCache;
+// Core logic lives in the `luminary` library crate (src/lib.rs).
+use luminary::database::Database;
+use luminary::image_cache::ImageCache;
+use luminary::models::SearchFilters;
+use luminary::scraper::Scraper;
+use luminary::tpdb::TpdbClient;
+use luminary::{config, embedder, image_cache, models, recommender};
 
 /// Downloads (cached) and renders a small inline thumbnail for a performer.
 /// Best-effort: silently does nothing if the terminal can't display images.
@@ -74,9 +71,7 @@ enum Commands {
         gallery: bool,
     },
     /// Remove a performer from the database
-    Remove {
-        name: String,
-    },
+    Remove { name: String },
     /// Show statistics about your database
     Stats,
     /// Clear image cache
@@ -199,8 +194,14 @@ async fn main() -> anyhow::Result<()> {
             limit,
         } => {
             search_performers(
-                &db, body_type, age_min, age_max,
-                ethnicity, hair_color, show_images, limit,
+                &db,
+                body_type,
+                age_min,
+                age_max,
+                ethnicity,
+                hair_color,
+                show_images,
+                limit,
             )
             .await?;
         }
@@ -225,13 +226,41 @@ async fn main() -> anyhow::Result<()> {
         Commands::Recommend { limit, images } => {
             recommend(&db, limit, images).await?;
         }
-        Commands::Find { looks_like, body_like, hair, eye, ethnicity, cup, hips, waist, whr, tattoo, face_only, images, age_min, age_max, limit } => {
-            find(&db, looks_like, body_like, hair, eye, ethnicity, cup, hips, waist, whr, tattoo, face_only, images, age_min, age_max, limit).await?;
+        Commands::Find {
+            looks_like,
+            body_like,
+            hair,
+            eye,
+            ethnicity,
+            cup,
+            hips,
+            waist,
+            whr,
+            tattoo,
+            face_only,
+            images,
+            age_min,
+            age_max,
+            limit,
+        } => {
+            find(
+                &db, looks_like, body_like, hair, eye, ethnicity, cup, hips, waist, whr, tattoo,
+                face_only, images, age_min, age_max, limit,
+            )
+            .await?;
         }
-        Commands::Similar { name, limit, images } => {
+        Commands::Similar {
+            name,
+            limit,
+            images,
+        } => {
             similar(&db, &name, limit, images).await?;
         }
-        Commands::Alias { alias, canonical, remove } => {
+        Commands::Alias {
+            alias,
+            canonical,
+            remove,
+        } => {
             manage_alias(&db, alias, canonical, remove)?;
         }
         Commands::Embed => {
@@ -246,15 +275,18 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn get_db_path() -> anyhow::Result<String> {
-    let data_dir = dirs::data_local_dir()
-        .ok_or_else(|| anyhow::anyhow!("Could not find data directory"))?;
+    let data_dir =
+        dirs::data_local_dir().ok_or_else(|| anyhow::anyhow!("Could not find data directory"))?;
     let db_dir = data_dir.join("luminary");
     std::fs::create_dir_all(&db_dir)?;
     Ok(db_dir.join("luminary.db").to_string_lossy().to_string())
 }
 
 async fn add_performers(db: &Database, names: Vec<String>) -> anyhow::Result<()> {
-    println!("{}", "Adding performers to your profile...".bright_cyan().bold());
+    println!(
+        "{}",
+        "Adding performers to your profile...".bright_cyan().bold()
+    );
     println!();
 
     let api_key = std::env::var("TPDB_API_KEY").ok();
@@ -264,13 +296,22 @@ async fn add_performers(db: &Database, names: Vec<String>) -> anyhow::Result<()>
     if tpdb_client.is_some() {
         println!("{}", "Using ThePornDB API".bright_green());
     } else {
-        println!("{}", "No TPDB_API_KEY found, using web scraping (may fail)".yellow());
-        println!("{}", "   Set TPDB_API_KEY environment variable for better results".bright_black());
+        println!(
+            "{}",
+            "No TPDB_API_KEY found, using web scraping (may fail)".yellow()
+        );
+        println!(
+            "{}",
+            "   Set TPDB_API_KEY environment variable for better results".bright_black()
+        );
     }
     println!();
 
     for name in names {
-        print!("{} ", format!("Fetching data for {}...", name).bright_black());
+        print!(
+            "{} ",
+            format!("Fetching data for {}...", name).bright_black()
+        );
         std::io::Write::flush(&mut std::io::stdout()).ok();
 
         let mut performer_data = None;
@@ -310,24 +351,31 @@ async fn add_performers(db: &Database, names: Vec<String>) -> anyhow::Result<()>
                             let _ = db.save_alias(&name, &performer.name);
                         }
 
-                        println!("\r{} {} {}{}",
+                        println!(
+                            "\r{} {} {}{}",
                             "[OK]".green(),
                             "Added:".white(),
                             performer.name.bright_white().bold(),
                             if name.to_lowercase() != performer.name.to_lowercase() {
                                 format!(" (alias: {})", name).bright_black().to_string()
-                            } else { String::new() }
+                            } else {
+                                String::new()
+                            }
                         );
-                        println!("     {}", format!("({}, {})", performer.body_type, source).bright_black());
+                        println!(
+                            "     {}",
+                            format!("({}, {})", performer.body_type, source).bright_black()
+                        );
                         // Try to generate face embedding silently
-                        let face_url = performer.face_url.as_deref()
+                        let face_url = performer
+                            .face_url
+                            .as_deref()
                             .or(performer.profile_image_url.as_deref());
                         if let Some(url) = face_url {
                             match embedder::generate_embedding(url) {
                                 Ok(emb) => {
                                     let _ = db.save_embedding(&performer.name, &emb);
-                                    println!("     {} face embedding stored",
-                                        "↳".bright_black());
+                                    println!("     {} face embedding stored", "↳".bright_black());
                                 }
                                 Err(e) => {
                                     log::debug!("Embedding skipped for {}: {}", name, e);
@@ -336,20 +384,27 @@ async fn add_performers(db: &Database, names: Vec<String>) -> anyhow::Result<()>
                         }
                     }
                     Err(e) => {
-                        println!("\r{} {} {}: {}",
-                            "[X]".red(), "Failed to save:".white(), name, e);
+                        println!(
+                            "\r{} {} {}: {}",
+                            "[X]".red(),
+                            "Failed to save:".white(),
+                            name,
+                            e
+                        );
                     }
                 }
             }
             None => {
-                println!("\r{} {} {}",
-                    "[X]".red(), "Not found:".white(), name);
+                println!("\r{} {} {}", "[X]".red(), "Not found:".white(), name);
             }
         }
     }
 
     println!();
-    println!("{}", "Tip: Use 'luminary search' to find similar performers".bright_black());
+    println!(
+        "{}",
+        "Tip: Use 'luminary search' to find similar performers".bright_black()
+    );
     Ok(())
 }
 
@@ -358,15 +413,24 @@ fn list_performers(db: &Database) -> anyhow::Result<()> {
 
     if performers.is_empty() {
         println!("{}", "No performers in database yet.".yellow());
-        println!("{}", "Use 'luminary add <names...>' to add some!".bright_black());
+        println!(
+            "{}",
+            "Use 'luminary add <names...>' to add some!".bright_black()
+        );
         return Ok(());
     }
 
-    println!("{}", format!("Your Performers ({} total)", performers.len()).bright_cyan().bold());
+    println!(
+        "{}",
+        format!("Your Performers ({} total)", performers.len())
+            .bright_cyan()
+            .bold()
+    );
     println!();
 
     for performer in performers {
-        println!("{} {} {}",
+        println!(
+            "{} {} {}",
             "*".bright_black(),
             performer.name.bright_white().bold(),
             format!("({})", performer.body_type).bright_black()
@@ -387,7 +451,11 @@ async fn search_performers(
     limit: usize,
 ) -> anyhow::Result<()> {
     let filters = SearchFilters {
-        body_type, age_min, age_max, ethnicity, hair_color,
+        body_type,
+        age_min,
+        age_max,
+        ethnicity,
+        hair_color,
         categories: Vec::new(),
         min_score: None,
     };
@@ -399,17 +467,28 @@ async fn search_performers(
         return Ok(());
     }
 
-    println!("{}", format!("Search Results ({} matches)", results.len()).bright_cyan().bold());
+    println!(
+        "{}",
+        format!("Search Results ({} matches)", results.len())
+            .bright_cyan()
+            .bold()
+    );
     println!();
 
     for (i, performer) in results.iter().take(limit).enumerate() {
-        println!("{}. {} {}",
+        println!(
+            "{}. {} {}",
             (i + 1).to_string().bright_black(),
             performer.name.bright_white().bold(),
-            format!("(Age: {}, Body: {})",
-                performer.age.map(|a| a.to_string()).unwrap_or_else(|| "?".to_string()),
+            format!(
+                "(Age: {}, Body: {})",
+                performer
+                    .age
+                    .map(|a| a.to_string())
+                    .unwrap_or_else(|| "?".to_string()),
                 performer.body_type
-            ).bright_black()
+            )
+            .bright_black()
         );
     }
 
@@ -439,11 +518,16 @@ async fn view_performer(db: &Database, name: &str, _gallery: bool) -> anyhow::Re
             }
             if let Some(meas) = &performer.measurements {
                 let boob_tag = match performer.fake_boobs {
-                    Some(true)  => "  (enhanced)",
+                    Some(true) => "  (enhanced)",
                     Some(false) => "  (natural)",
-                    None        => "",
+                    None => "",
                 };
-                println!("  {} {}{}", "Measurements:".bright_black(), meas, boob_tag.bright_black());
+                println!(
+                    "  {} {}{}",
+                    "Measurements:".bright_black(),
+                    meas,
+                    boob_tag.bright_black()
+                );
             }
             if let Some(h) = &performer.height {
                 println!("  {} {}", "Height:".bright_black(), h);
@@ -457,7 +541,10 @@ async fn view_performer(db: &Database, name: &str, _gallery: bool) -> anyhow::Re
             println!();
         }
         None => {
-            println!("{}", format!("Performer '{}' not found in database.", name).red());
+            println!(
+                "{}",
+                format!("Performer '{}' not found in database.", name).red()
+            );
         }
     }
     Ok(())
@@ -477,10 +564,21 @@ fn show_stats(db: &Database) -> anyhow::Result<()> {
 
     println!("{}", "Luminary Statistics".bright_cyan().bold());
     println!();
-    println!("  {} {}", "Performers:".bright_black(), count.to_string().bright_white());
-    println!("  {} {}", "Cached Images:".bright_black(), cache_count.to_string().bright_white());
-    println!("  {} {:.2} MB", "Cache Size:".bright_black(),
-        cache_size as f64 / 1024.0 / 1024.0);
+    println!(
+        "  {} {}",
+        "Performers:".bright_black(),
+        count.to_string().bright_white()
+    );
+    println!(
+        "  {} {}",
+        "Cached Images:".bright_black(),
+        cache_count.to_string().bright_white()
+    );
+    println!(
+        "  {} {:.2} MB",
+        "Cache Size:".bright_black(),
+        cache_size as f64 / 1024.0 / 1024.0
+    );
     println!();
 
     Ok(())
@@ -497,7 +595,10 @@ fn show_profile(db: &Database) -> anyhow::Result<()> {
     let performers = db.get_all_performers()?;
 
     if performers.is_empty() {
-        println!("{}", "No performers in database yet. Add some with 'luminary add'.".yellow());
+        println!(
+            "{}",
+            "No performers in database yet. Add some with 'luminary add'.".yellow()
+        );
         return Ok(());
     }
 
@@ -507,20 +608,30 @@ fn show_profile(db: &Database) -> anyhow::Result<()> {
 
     println!("{}", "Your Taste Profile".bright_cyan().bold());
     println!("{}", "═".repeat(42).bright_black());
-    println!("{}", format!("  Based on {} liked performers", total).bright_black());
+    println!(
+        "{}",
+        format!("  Based on {} liked performers", total).bright_black()
+    );
     println!();
 
     recommender::print_tree(&tree, "  ", total);
 
     println!();
     if path.is_empty() {
-        println!("{}", "  Add more performers to refine your type.".bright_black());
+        println!(
+            "{}",
+            "  Add more performers to refine your type.".bright_black()
+        );
     } else {
-        println!("{} {}",
+        println!(
+            "{} {}",
             "  Your type:".bright_black(),
             path.join(" → ").bright_white().bold()
         );
-        println!("{}", "  (The deeper the tree, the more specific your recommendations)".bright_black());
+        println!(
+            "{}",
+            "  (The deeper the tree, the more specific your recommendations)".bright_black()
+        );
     }
     println!();
 
@@ -531,7 +642,10 @@ async fn recommend(db: &Database, limit: usize, images: bool) -> anyhow::Result<
     let performers = db.get_all_performers()?;
 
     if performers.is_empty() {
-        println!("{}", "No performers in database yet. Add some with 'luminary add'.".yellow());
+        println!(
+            "{}",
+            "No performers in database yet. Add some with 'luminary add'.".yellow()
+        );
         return Ok(());
     }
 
@@ -539,39 +653,48 @@ async fn recommend(db: &Database, limit: usize, images: bool) -> anyhow::Result<
         .context("TPDB_API_KEY not set — needed for recommendations")?;
     let cfg = config::Config::load();
 
-    let known_names: std::collections::HashSet<String> = performers
-        .iter()
-        .map(|p| p.name.to_lowercase())
-        .collect();
+    let known_names: std::collections::HashSet<String> =
+        performers.iter().map(|p| p.name.to_lowercase()).collect();
 
     let tree = recommender::build_preference_tree(&performers);
     let path = recommender::dominant_query_path(&tree);
     // IDF weights: rare attributes among your likes count more than universal ones
     let idf = recommender::compute_idf_weights(&performers);
 
-    println!("{}", "Finding performers you might like...".bright_cyan().bold());
-    println!("{} {}",
+    println!(
+        "{}",
+        "Finding performers you might like...".bright_cyan().bold()
+    );
+    println!(
+        "{} {}",
         "  Profile:".bright_black(),
         path.join(" → ").bright_white().bold()
     );
     println!();
 
     // Collect TPDB numeric IDs from liked performers
-    let liked_ids: Vec<i64> = performers.iter()
-        .filter_map(|p| p.tpdb_id)
-        .collect();
+    let liked_ids: Vec<i64> = performers.iter().filter_map(|p| p.tpdb_id).collect();
 
     // Top cup size from preferences (most common cup among liked performers)
-    let top_cup = performers.iter()
+    let top_cup = performers
+        .iter()
         .filter_map(|p| p.measurements.as_deref())
         .filter_map(|m| {
             let bust = m.split('-').next()?;
             let cup = bust.trim_start_matches(|c: char| c.is_ascii_digit());
-            if cup.is_empty() { None } else { Some(cup.to_uppercase()) }
+            if cup.is_empty() {
+                None
+            } else {
+                Some(cup.to_uppercase())
+            }
         })
-        .fold(std::collections::HashMap::<String, usize>::new(), |mut acc, cup| {
-            *acc.entry(cup).or_insert(0) += 1; acc
-        })
+        .fold(
+            std::collections::HashMap::<String, usize>::new(),
+            |mut acc, cup| {
+                *acc.entry(cup).or_insert(0) += 1;
+                acc
+            },
+        )
         .into_iter()
         .max_by_key(|(_, v)| *v)
         .map(|(cup, _)| cup);
@@ -579,12 +702,14 @@ async fn recommend(db: &Database, limit: usize, images: bool) -> anyhow::Result<
     let top_ethnicity = path.get(1).map(|s| s.as_str());
 
     let client = TpdbClient::new(api_key);
-    let pool = client.get_recommendations(
-        &liked_ids,
-        top_ethnicity,
-        top_cup.as_deref(),
-        &cfg.gender_filter,
-    ).await?;
+    let pool = client
+        .get_recommendations(
+            &liked_ids,
+            top_ethnicity,
+            top_cup.as_deref(),
+            &cfg.gender_filter,
+        )
+        .await?;
 
     let mut scored: Vec<(f64, models::Performer)> = pool
         .into_iter()
@@ -598,28 +723,44 @@ async fn recommend(db: &Database, limit: usize, images: bool) -> anyhow::Result<
     scored.truncate(limit);
 
     if scored.is_empty() {
-        println!("{}", "No matching recommendations found. Try adding more performers to refine your profile.".yellow());
+        println!(
+            "{}",
+            "No matching recommendations found. Try adding more performers to refine your profile."
+                .yellow()
+        );
         return Ok(());
     }
 
-    println!("{}", format!("Top {} Recommendations for you:", scored.len()).bright_cyan().bold());
+    println!(
+        "{}",
+        format!("Top {} Recommendations for you:", scored.len())
+            .bright_cyan()
+            .bold()
+    );
     println!();
 
     let img_cache = if images { ImageCache::new().ok() } else { None };
 
     for (i, (score, p)) in scored.iter().enumerate() {
-        let age_str = p.age
+        let age_str = p
+            .age
             .map(|a| format!(", {}", recommender::age_bucket(a)))
             .unwrap_or_default();
-        println!("{}. {} {}  {}",
+        println!(
+            "{}. {} {}  {}",
             (i + 1).to_string().bright_black(),
             p.name.bright_white().bold(),
-            format!("({}, {}{}{})",
+            format!(
+                "({}, {}{}{})",
                 p.body_type,
                 p.ethnicity.as_deref().unwrap_or("?"),
-                p.hair_color.as_ref().map(|h| format!(", {}", h)).unwrap_or_default(),
+                p.hair_color
+                    .as_ref()
+                    .map(|h| format!(", {}", h))
+                    .unwrap_or_default(),
                 age_str,
-            ).bright_black(),
+            )
+            .bright_black(),
             format!("match {:.0}%", score / 10.0 * 100.0).bright_cyan()
         );
         if let Some(url) = &p.source_url {
@@ -633,51 +774,62 @@ async fn recommend(db: &Database, limit: usize, images: bool) -> anyhow::Result<
     }
 
     println!();
-    println!("{}", "Use 'luminary add <name>' to add any to your profile.".bright_black());
+    println!(
+        "{}",
+        "Use 'luminary add <name>' to add any to your profile.".bright_black()
+    );
 
     Ok(())
 }
 
 async fn find(
     db: &Database,
-    looks_like:  Option<String>,
-    body_like:   Option<String>,
-    hair_arg:    Option<String>,
-    eye_arg:     Option<String>,
-    eth_arg:     Option<String>,
-    cup_arg:     Option<String>,
-    hips_arg:    Option<u32>,
-    waist_arg:   Option<u32>,
-    whr_arg:     Option<f64>,
-    tattoo_arg:  Option<String>,
-    face_only:   bool,
-    images:      bool,
-    age_min:     Option<u32>,
-    age_max:     Option<u32>,
-    limit:       usize,
+    looks_like: Option<String>,
+    body_like: Option<String>,
+    hair_arg: Option<String>,
+    eye_arg: Option<String>,
+    eth_arg: Option<String>,
+    cup_arg: Option<String>,
+    hips_arg: Option<u32>,
+    waist_arg: Option<u32>,
+    whr_arg: Option<f64>,
+    tattoo_arg: Option<String>,
+    face_only: bool,
+    images: bool,
+    age_min: Option<u32>,
+    age_max: Option<u32>,
+    limit: usize,
 ) -> anyhow::Result<()> {
     let api_key = std::env::var("TPDB_API_KEY").context("TPDB_API_KEY not set")?;
     let cfg = config::Config::load();
 
     // ── Pull attributes from named performers ─────────────────────────────
     let mut ethnicity = eth_arg;
-    let mut hair      = hair_arg;
-    let mut eye       = eye_arg;
-    let mut cup       = cup_arg;
-    let mut hips      = hips_arg;
-    let mut waist     = waist_arg;
-    let mut whr       = whr_arg;
+    let mut hair = hair_arg;
+    let mut eye = eye_arg;
+    let mut cup = cup_arg;
+    let mut hips = hips_arg;
+    let mut waist = waist_arg;
+    let mut whr = whr_arg;
 
-    let face_ranking = looks_like.as_deref()
+    let face_ranking = looks_like
+        .as_deref()
         .map(|n| db.get_embedding(n).ok().flatten().is_some())
         .unwrap_or(false);
 
     if let Some(ref name) = looks_like {
-        let p = db.get_performer(name)?
+        let p = db
+            .get_performer(name)?
             .ok_or_else(|| anyhow::anyhow!("'{}' not in database", name))?;
-        if ethnicity.is_none() { ethnicity = p.ethnicity.clone(); }
-        if hair.is_none()      { hair = p.hair_color.clone(); }
-        if eye.is_none() && !face_ranking { eye = p.eye_color.clone(); }
+        if ethnicity.is_none() {
+            ethnicity = p.ethnicity.clone();
+        }
+        if hair.is_none() {
+            hair = p.hair_color.clone();
+        }
+        if eye.is_none() && !face_ranking {
+            eye = p.eye_color.clone();
+        }
     }
 
     // Body reference (butt + boobs): explicit --body-like, else --looks-like.
@@ -688,18 +840,27 @@ async fn find(
         body_like.clone().or_else(|| looks_like.clone())
     };
     if let Some(ref name) = body_ref_name {
-        let p = db.get_performer(name)?
+        let p = db
+            .get_performer(name)?
             .ok_or_else(|| anyhow::anyhow!("'{}' not in database", name))?;
         if let Some(ref m) = p.measurements {
             let parts: Vec<&str> = m.split('-').collect();
             if cup.is_none() {
-                cup = parts.first()
-                    .map(|s| s.trim_start_matches(|c: char| c.is_ascii_digit()).to_uppercase())
+                cup = parts
+                    .first()
+                    .map(|s| {
+                        s.trim_start_matches(|c: char| c.is_ascii_digit())
+                            .to_uppercase()
+                    })
                     .filter(|s| !s.is_empty());
             }
             if hips.is_none() {
-                hips = parts.get(2).and_then(|s|
-                    s.trim().trim_end_matches(|c: char| !c.is_ascii_digit()).parse().ok());
+                hips = parts.get(2).and_then(|s| {
+                    s.trim()
+                        .trim_end_matches(|c: char| !c.is_ascii_digit())
+                        .parse()
+                        .ok()
+                });
             }
         }
         // WHR — the butt/build shape, a real filter (you're attracted to butt)
@@ -707,16 +868,23 @@ async fn find(
             whr = recommender::performer_whr(&p);
         }
     }
-    if whr.is_some() { waist = None; } // redundant with WHR
+    if whr.is_some() {
+        waist = None;
+    } // redundant with WHR
 
     // ── Tattoo: SOFT bonus only — preferred, never required (off in face-only) ──
-    let tattoo_pref: Option<String> = if face_only { None } else {
+    let tattoo_pref: Option<String> = if face_only {
+        None
+    } else {
         tattoo_arg.clone().or_else(|| {
-            body_ref_name.as_ref()
+            body_ref_name
+                .as_ref()
                 .and_then(|n| db.get_performer(n).ok().flatten())
                 .and_then(|p| {
                     let locs = recommender::parse_tattoos(p.tattoos.as_deref());
-                    locs.iter().find(|t| t.contains("lower back")).cloned()
+                    locs.iter()
+                        .find(|t| t.contains("lower back"))
+                        .cloned()
                         .or_else(|| locs.iter().find(|t| t.contains("back")).cloned())
                 })
         })
@@ -725,35 +893,84 @@ async fn find(
     // ── Display criteria ──────────────────────────────────────────────────
     println!("{}", "Searching for performers with:".bright_cyan().bold());
     let mut criteria: Vec<String> = vec![];
-    if let Some(ref n) = looks_like { criteria.push(format!("face like {}", n.bright_white())); }
-    if let Some(ref n) = body_like  { criteria.push(format!("body like {}", n.bright_white())); }
-    if let Some(ref v) = ethnicity  { criteria.push(format!("ethnicity: {}", v.bright_white())); }
-    if let Some(ref v) = hair       { criteria.push(format!("hair: {}", v.bright_white())); }
-    if let Some(ref v) = eye        { criteria.push(format!("eyes: {}", v.bright_white())); }
-    if let Some(ref v) = cup        { criteria.push(format!("cup: {}", v.bright_white())); }
-    if let Some(v) = hips           { criteria.push(format!("hips: {}\" ±4", v.to_string().bright_white())); }
-    if let Some(v) = waist          { criteria.push(format!("waist: {}\" ±4", v.to_string().bright_white())); }
-    if let Some(v) = whr            { criteria.push(format!("waist-to-hip ratio: {:.3} ±0.05 (butt shape)", v).bright_white().to_string()); }
-    if let Some(ref v) = tattoo_pref { criteria.push(format!("tattoo bonus: {} (preferred, not required)", v.bright_white())); }
-    if let Some(v) = age_min        { criteria.push(format!("age ≥ {}", v.to_string().bright_white())); }
-    if let Some(v) = age_max        { criteria.push(format!("age ≤ {}", v.to_string().bright_white())); }
-    for c in &criteria { println!("  · {}", c); }
+    if let Some(ref n) = looks_like {
+        criteria.push(format!("face like {}", n.bright_white()));
+    }
+    if let Some(ref n) = body_like {
+        criteria.push(format!("body like {}", n.bright_white()));
+    }
+    if let Some(ref v) = ethnicity {
+        criteria.push(format!("ethnicity: {}", v.bright_white()));
+    }
+    if let Some(ref v) = hair {
+        criteria.push(format!("hair: {}", v.bright_white()));
+    }
+    if let Some(ref v) = eye {
+        criteria.push(format!("eyes: {}", v.bright_white()));
+    }
+    if let Some(ref v) = cup {
+        criteria.push(format!("cup: {}", v.bright_white()));
+    }
+    if let Some(v) = hips {
+        criteria.push(format!("hips: {}\" ±4", v.to_string().bright_white()));
+    }
+    if let Some(v) = waist {
+        criteria.push(format!("waist: {}\" ±4", v.to_string().bright_white()));
+    }
+    if let Some(v) = whr {
+        criteria.push(
+            format!("waist-to-hip ratio: {:.3} ±0.05 (butt shape)", v)
+                .bright_white()
+                .to_string(),
+        );
+    }
+    if let Some(ref v) = tattoo_pref {
+        criteria.push(format!(
+            "tattoo bonus: {} (preferred, not required)",
+            v.bright_white()
+        ));
+    }
+    if let Some(v) = age_min {
+        criteria.push(format!("age ≥ {}", v.to_string().bright_white()));
+    }
+    if let Some(v) = age_max {
+        criteria.push(format!("age ≤ {}", v.to_string().bright_white()));
+    }
+    for c in &criteria {
+        println!("  · {}", c);
+    }
     println!();
 
-    let known_names: std::collections::HashSet<String> = db.get_all_performers()?
-        .iter().map(|p| p.name.to_lowercase()).collect();
+    let known_names: std::collections::HashSet<String> = db
+        .get_all_performers()?
+        .iter()
+        .map(|p| p.name.to_lowercase())
+        .collect();
 
     let client = TpdbClient::new(api_key);
-    let mut results = client.search_by_attributes(
-        ethnicity.as_deref(), hair.as_deref(), eye.as_deref(),
-        cup.as_deref(), hips, waist, whr, age_min, age_max, &cfg.gender_filter, limit * 8,
-    ).await?;
+    let mut results = client
+        .search_by_attributes(
+            ethnicity.as_deref(),
+            hair.as_deref(),
+            eye.as_deref(),
+            cup.as_deref(),
+            hips,
+            waist,
+            whr,
+            age_min,
+            age_max,
+            &cfg.gender_filter,
+            limit * 8,
+        )
+        .await?;
     results.retain(|p| !known_names.contains(&p.name.to_lowercase()));
 
     // ── Ranking references ────────────────────────────────────────────────
-    let ref_embedding = looks_like.as_deref()
+    let ref_embedding = looks_like
+        .as_deref()
         .and_then(|name| db.get_embedding(name).ok().flatten());
-    let ref_body_vec = body_ref_name.as_ref()
+    let ref_body_vec = body_ref_name
+        .as_ref()
         .and_then(|n| db.get_performer(n).ok().flatten())
         .and_then(|p| recommender::feature_vector(&p));
 
@@ -762,8 +979,12 @@ async fn find(
     if ref_embedding.is_some() {
         if let Some(rv) = &ref_body_vec {
             results.sort_by(|a, b| {
-                let da = recommender::feature_vector(a).map(|v| rv.distance(&v)).unwrap_or(f64::MAX);
-                let db_ = recommender::feature_vector(b).map(|v| rv.distance(&v)).unwrap_or(f64::MAX);
+                let da = recommender::feature_vector(a)
+                    .map(|v| rv.distance(&v))
+                    .unwrap_or(f64::MAX);
+                let db_ = recommender::feature_vector(b)
+                    .map(|v| rv.distance(&v))
+                    .unwrap_or(f64::MAX);
                 da.partial_cmp(&db_).unwrap_or(std::cmp::Ordering::Equal)
             });
         }
@@ -771,34 +992,55 @@ async fn find(
 
     let mut embeds_done = 0usize;
 
-    // Score: rank by face (if available) else body; tattoo adds a small bonus.
-    // (score, face_sim, body_sim, has_stamp, performer)
+    // Score each candidate. (sort_key, face_sim, body_sim, has_stamp, performer)
+    //
+    // When looks-like provides a face embedding, FACIAL similarity drives the
+    // ranking — a candidate with a real face match must outrank one scored only
+    // by body. We can't compare a face cosine (~50–65%) against a body % (~90%)
+    // on the same scale, so face-bearing candidates are lifted into a higher
+    // band (+1000) and ordered by face among themselves; body-only candidates
+    // fall below them, ordered by build. Without a face embedding we rank by body.
+    let face_ranks = ref_embedding.is_some();
+
     let mut scored: Vec<(f64, Option<f32>, Option<f64>, bool, models::Performer)> = results
         .into_iter()
         .map(|p| {
             let face = ref_embedding.as_ref().and_then(|ref_emb| {
-                let emb = db.get_embedding(&p.name).ok().flatten()
-                    .or_else(|| {
-                        if embeds_done >= MAX_ONTHEFLY_EMBEDS { return None; }
-                        embeds_done += 1;
-                        p.face_url.as_deref().or(p.profile_image_url.as_deref())
-                            .and_then(|url| embedder::generate_embedding(url).ok()
-                                .inspect(|e| { let _ = db.save_embedding(&p.name, e); }))
-                    });
+                let emb = db.get_embedding(&p.name).ok().flatten().or_else(|| {
+                    if embeds_done >= MAX_ONTHEFLY_EMBEDS {
+                        return None;
+                    }
+                    embeds_done += 1;
+                    p.face_url
+                        .as_deref()
+                        .or(p.profile_image_url.as_deref())
+                        .and_then(|url| {
+                            embedder::generate_embedding(url).ok().inspect(|e| {
+                                let _ = db.save_embedding(&p.name, e);
+                            })
+                        })
+                });
                 emb.map(|e| embedder::cosine_similarity(ref_emb, &e))
             });
-            let body = ref_body_vec.as_ref().and_then(|rv| {
-                recommender::feature_vector(&p).map(|cv| rv.similarity_pct(&cv))
-            });
-            let has_stamp = tattoo_pref.as_ref()
-                .map_or(false, |kw| recommender::has_tattoo(&p, kw));
+            let body = ref_body_vec
+                .as_ref()
+                .and_then(|rv| recommender::feature_vector(&p).map(|cv| rv.similarity_pct(&cv)));
+            let has_stamp = tattoo_pref
+                .as_ref()
+                .is_some_and(|kw| recommender::has_tattoo(&p, kw));
+            let stamp_bonus = if has_stamp { 5.0 } else { 0.0 };
 
-            // Base score = face if we have it, else body. Tattoo adds +5 bonus.
-            let base = face.map(|f| embedder::similarity_pct(f) as f64)
-                .or(body)
-                .unwrap_or(0.0);
-            let score = base + if has_stamp { 5.0 } else { 0.0 };
-            (score, face, body, has_stamp, p)
+            let sort_key = if face_ranks {
+                match face {
+                    // Face match: high band, ordered by facial similarity
+                    Some(f) => 1000.0 + embedder::similarity_pct(f) as f64 + stamp_bonus,
+                    // No usable face image: ranked below all facial matches, by build
+                    None => body.unwrap_or(0.0) + stamp_bonus,
+                }
+            } else {
+                body.unwrap_or(0.0) + stamp_bonus
+            };
+            (sort_key, face, body, has_stamp, p)
         })
         .collect();
 
@@ -806,45 +1048,93 @@ async fn find(
     scored.truncate(limit);
 
     if scored.is_empty() {
-        println!("{}", "No results found. Try relaxing some filters.".yellow());
+        println!(
+            "{}",
+            "No results found. Try relaxing some filters.".yellow()
+        );
         return Ok(());
     }
 
-    let rank_by = if ref_embedding.is_some() { "face similarity" } else { "body/build similarity" };
-    println!("{}", format!("Top {} matches (ranked by {}, +tattoo bonus):", scored.len(), rank_by)
-        .bright_cyan().bold());
+    let rank_by = if ref_embedding.is_some() {
+        "face similarity"
+    } else {
+        "body/build similarity"
+    };
+    println!(
+        "{}",
+        format!(
+            "Top {} matches (ranked by {}, +tattoo bonus):",
+            scored.len(),
+            rank_by
+        )
+        .bright_cyan()
+        .bold()
+    );
     println!();
 
     let img_cache = if images { ImageCache::new().ok() } else { None };
 
     for (i, (_score, face, body, has_stamp, p)) in scored.iter().enumerate() {
-        let age_str = p.age.map(|a| format!(", {}", recommender::age_bucket(a))).unwrap_or_default();
-        let meas_str = p.measurements.as_deref().map(|m| {
-            let parts: Vec<&str> = m.split('-').collect();
-            if parts.len() >= 3 {
-                let whr_str = recommender::performer_whr(p)
-                    .map(|r| format!(" whr {:.2}", r)).unwrap_or_default();
-                format!(", {}w {}h{}", parts[1].trim(),
-                    parts[2].trim().trim_end_matches(|c: char| !c.is_ascii_digit()), whr_str)
-            } else { String::new() }
-        }).unwrap_or_default();
+        let age_str = p
+            .age
+            .map(|a| format!(", {}", recommender::age_bucket(a)))
+            .unwrap_or_default();
+        let meas_str = p
+            .measurements
+            .as_deref()
+            .map(|m| {
+                let parts: Vec<&str> = m.split('-').collect();
+                if parts.len() >= 3 {
+                    let whr_str = recommender::performer_whr(p)
+                        .map(|r| format!(" whr {:.2}", r))
+                        .unwrap_or_default();
+                    format!(
+                        ", {}w {}h{}",
+                        parts[1].trim(),
+                        parts[2]
+                            .trim()
+                            .trim_end_matches(|c: char| !c.is_ascii_digit()),
+                        whr_str
+                    )
+                } else {
+                    String::new()
+                }
+            })
+            .unwrap_or_default();
 
         let mut tags = String::new();
-        if let Some(s) = face { tags.push_str(&format!("  face {:.0}%", embedder::similarity_pct(*s))); }
-        if let Some(b) = body { tags.push_str(&format!("  body {:.0}%", b)); }
-        let stamp = if *has_stamp { "  +stamp".to_string() } else { String::new() };
+        if let Some(s) = face {
+            tags.push_str(&format!("  face {:.0}%", embedder::similarity_pct(*s)));
+        }
+        if let Some(b) = body {
+            tags.push_str(&format!("  body {:.0}%", b));
+        }
+        let stamp = if *has_stamp {
+            "  +stamp".to_string()
+        } else {
+            String::new()
+        };
 
-        println!("{}. {} {}{}{}",
+        println!(
+            "{}. {} {}{}{}",
             (i + 1).to_string().bright_black(),
             p.name.bright_white().bold(),
-            format!("({}, {}{}{}{}{})",
+            format!(
+                "({}, {}{}{}{}{})",
                 p.body_type,
                 p.ethnicity.as_deref().unwrap_or("?"),
-                p.hair_color.as_ref().map(|h| format!(", {}", h)).unwrap_or_default(),
-                p.eye_color.as_ref().map(|e| format!(", {} eyes", e)).unwrap_or_default(),
+                p.hair_color
+                    .as_ref()
+                    .map(|h| format!(", {}", h))
+                    .unwrap_or_default(),
+                p.eye_color
+                    .as_ref()
+                    .map(|e| format!(", {} eyes", e))
+                    .unwrap_or_default(),
                 meas_str,
                 age_str,
-            ).bright_black(),
+            )
+            .bright_black(),
             tags.bright_cyan(),
             stamp.bright_green(),
         );
@@ -861,40 +1151,57 @@ async fn find(
     }
     println!();
     if ref_embedding.is_none() && looks_like.is_some() {
-        println!("{}", "  Tip: run 'luminary embed' first for ML face-similarity ranking".bright_black());
+        println!(
+            "{}",
+            "  Tip: run 'luminary embed' first for ML face-similarity ranking".bright_black()
+        );
     }
-    println!("{}", "Use 'luminary add <name>' to add any to your profile.".bright_black());
+    println!(
+        "{}",
+        "Use 'luminary add <name>' to add any to your profile.".bright_black()
+    );
     Ok(())
 }
 
 async fn similar(db: &Database, name: &str, limit: usize, images: bool) -> anyhow::Result<()> {
-    let performer = db.get_performer(name)?
-        .ok_or_else(|| anyhow::anyhow!("'{}' not found in your database. Add them first with 'luminary add'.", name))?;
+    let performer = db.get_performer(name)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "'{}' not found in your database. Add them first with 'luminary add'.",
+            name
+        )
+    })?;
 
-    let tpdb_uuid = performer.source_url
+    let tpdb_uuid = performer
+        .source_url
         .as_deref()
-        .and_then(|url| url.split('/').last())
+        .and_then(|url| url.split('/').next_back())
         .ok_or_else(|| anyhow::anyhow!("No TPDB ID stored for '{}'", name))?
         .to_string();
 
-    let api_key = std::env::var("TPDB_API_KEY")
-        .context("TPDB_API_KEY not set")?;
+    let api_key = std::env::var("TPDB_API_KEY").context("TPDB_API_KEY not set")?;
     let cfg = config::Config::load();
     let client = TpdbClient::new(api_key);
 
-    println!("{} {}",
+    println!(
+        "{} {}",
         "Finding performers similar to".bright_cyan(),
         performer.name.bright_white().bold()
     );
-    println!("{} {}  {}  {}",
+    println!(
+        "{} {}  {}  {}",
         " ".bright_black(),
         performer.body_type.bright_black(),
         performer.ethnicity.as_deref().unwrap_or("?").bright_black(),
-        performer.hair_color.as_deref().unwrap_or("?").bright_black(),
+        performer
+            .hair_color
+            .as_deref()
+            .unwrap_or("?")
+            .bright_black(),
     );
     println!();
 
-    let known_names: std::collections::HashSet<String> = db.get_all_performers()?
+    let known_names: std::collections::HashSet<String> = db
+        .get_all_performers()?
         .iter()
         .map(|p| p.name.to_lowercase())
         .collect();
@@ -911,13 +1218,15 @@ async fn similar(db: &Database, name: &str, limit: usize, images: bool) -> anyho
         .map(|p| {
             let attr_score = recommender::score_against(&p, &performer);
             let face_sim = ref_embedding.as_ref().and_then(|ref_emb| {
-                db.get_embedding(&p.name).ok().flatten()
+                db.get_embedding(&p.name)
+                    .ok()
+                    .flatten()
                     .map(|e| embedder::cosine_similarity(ref_emb, &e))
             });
             // Combined score: attributes (70%) + face similarity (30%) if available
             let combined = match face_sim {
                 Some(fs) => attr_score * 0.70 + embedder::similarity_pct(fs) as f64 * 0.30,
-                None     => attr_score,
+                None => attr_score,
             };
             (combined, face_sim, p)
         })
@@ -931,29 +1240,48 @@ async fn similar(db: &Database, name: &str, limit: usize, images: bool) -> anyho
         return Ok(());
     }
 
-    println!("{}", format!("Top {} similar to {}{}:",
-        scored.len(),
-        performer.name,
-        if has_face_ml { " (attr + face)" } else { " (attributes)" }
-    ).bright_cyan().bold());
+    println!(
+        "{}",
+        format!(
+            "Top {} similar to {}{}:",
+            scored.len(),
+            performer.name,
+            if has_face_ml {
+                " (attr + face)"
+            } else {
+                " (attributes)"
+            }
+        )
+        .bright_cyan()
+        .bold()
+    );
     println!();
 
     let img_cache = if images { ImageCache::new().ok() } else { None };
 
     for (i, (score, face_sim, p)) in scored.iter().enumerate() {
-        let age_str = p.age.map(|a| format!(", {}", recommender::age_bucket(a))).unwrap_or_default();
+        let age_str = p
+            .age
+            .map(|a| format!(", {}", recommender::age_bucket(a)))
+            .unwrap_or_default();
         let face_str = face_sim
             .map(|s| format!("  face {:.0}%", embedder::similarity_pct(s)))
             .unwrap_or_default();
-        println!("{}. {} {}  {}{}",
+        println!(
+            "{}. {} {}  {}{}",
             (i + 1).to_string().bright_black(),
             p.name.bright_white().bold(),
-            format!("({}, {}{}{})",
+            format!(
+                "({}, {}{}{})",
                 p.body_type,
                 p.ethnicity.as_deref().unwrap_or("?"),
-                p.hair_color.as_ref().map(|h| format!(", {}", h)).unwrap_or_default(),
+                p.hair_color
+                    .as_ref()
+                    .map(|h| format!(", {}", h))
+                    .unwrap_or_default(),
                 age_str,
-            ).bright_black(),
+            )
+            .bright_black(),
             format!("match {:.0}%", score).bright_cyan(),
             face_str.bright_black(),
         );
@@ -969,9 +1297,15 @@ async fn similar(db: &Database, name: &str, limit: usize, images: bool) -> anyho
 
     println!();
     if !has_face_ml {
-        println!("{}", "  Tip: run 'luminary embed' to add face similarity scoring".bright_black());
+        println!(
+            "{}",
+            "  Tip: run 'luminary embed' to add face similarity scoring".bright_black()
+        );
     }
-    println!("{}", "Use 'luminary add <name>' to add any to your profile.".bright_black());
+    println!(
+        "{}",
+        "Use 'luminary add <name>' to add any to your profile.".bright_black()
+    );
     Ok(())
 }
 
@@ -991,7 +1325,8 @@ fn manage_alias(
                 println!("{}", "Name Aliases".bright_cyan().bold());
                 println!("{}", "═".repeat(35).bright_black());
                 for (alias, canonical) in &aliases {
-                    println!("  {} {} {}",
+                    println!(
+                        "  {} {} {}",
                         alias.bright_white(),
                         "→".bright_black(),
                         canonical.bright_white().bold()
@@ -1008,10 +1343,15 @@ fn manage_alias(
         (Some(alias), Some(canonical), false) => {
             // Verify canonical exists
             if db.get_performer(&canonical)?.is_none() {
-                println!("{} '{}' not found in database.", "Warning:".yellow(), canonical);
+                println!(
+                    "{} '{}' not found in database.",
+                    "Warning:".yellow(),
+                    canonical
+                );
             }
             db.save_alias(&alias, &canonical)?;
-            println!("{} {} {} {}",
+            println!(
+                "{} {} {} {}",
                 "Saved:".green(),
                 alias.bright_white(),
                 "→".bright_black(),
@@ -1019,12 +1359,14 @@ fn manage_alias(
             );
         }
         // Look up what an alias resolves to
-        (Some(alias), None, false) => {
-            match db.resolve_alias(&alias)? {
-                Some(canonical) => println!("{} → {}", alias.bright_white(), canonical.bright_white().bold()),
-                None => println!("'{}' has no alias stored.", alias),
-            }
-        }
+        (Some(alias), None, false) => match db.resolve_alias(&alias)? {
+            Some(canonical) => println!(
+                "{} → {}",
+                alias.bright_white(),
+                canonical.bright_white().bold()
+            ),
+            None => println!("'{}' has no alias stored.", alias),
+        },
     }
     Ok(())
 }
@@ -1037,9 +1379,16 @@ fn embed_all(db: &Database) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    println!("{}", format!("Generating embeddings for {} performers...", pending.len())
-        .bright_cyan().bold());
-    println!("{}", "  Note: first run downloads the ArcFace model (~100 MB)".bright_black());
+    println!(
+        "{}",
+        format!("Generating embeddings for {} performers...", pending.len())
+            .bright_cyan()
+            .bold()
+    );
+    println!(
+        "{}",
+        "  Note: first run downloads the ArcFace model (~100 MB)".bright_black()
+    );
     println!();
 
     let mut ok = 0;
@@ -1048,7 +1397,11 @@ fn embed_all(db: &Database) -> anyhow::Result<()> {
     for p in &pending {
         let face_url = p.face_url.as_deref().or(p.profile_image_url.as_deref());
         let Some(url) = face_url else {
-            println!("  {} {} — no image URL", "–".bright_black(), p.name.bright_black());
+            println!(
+                "  {} {} — no image URL",
+                "–".bright_black(),
+                p.name.bright_black()
+            );
             skipped += 1;
             continue;
         };
@@ -1070,7 +1423,10 @@ fn embed_all(db: &Database) -> anyhow::Result<()> {
     }
 
     println!();
-    println!("{}", format!("Done: {} embedded, {} skipped", ok, skipped).green());
+    println!(
+        "{}",
+        format!("Done: {} embedded, {} skipped", ok, skipped).green()
+    );
     Ok(())
 }
 
@@ -1083,31 +1439,41 @@ fn configure(key: Option<String>, value: Option<String>) -> anyhow::Result<()> {
             // Show current config
             println!("{}", "Luminary Settings".bright_cyan().bold());
             println!("{}", "═".repeat(35).bright_black());
-            println!("  {} {}",
+            println!(
+                "  {} {}",
                 "gender:".bright_black(),
                 cfg.gender_filter.display().bright_white()
             );
             println!();
-            println!("{}", "  Valid values: female, male, trans-female, trans-male, any".bright_black());
+            println!(
+                "{}",
+                "  Valid values: female, male, trans-female, trans-male, any".bright_black()
+            );
         }
-        (Some("gender"), Some(val)) => {
-            match config::GenderFilter::from_str(val) {
-                Some(filter) => {
-                    cfg.gender_filter = filter;
-                    cfg.save()?;
-                    println!("{} gender = {}",
-                        "Updated:".green(),
-                        cfg.gender_filter.display().bright_white()
-                    );
-                }
-                None => {
-                    println!("{} Unknown value '{}'. Use: female, male, trans-female, trans-male, any",
-                        "Error:".red(), val);
-                }
+        (Some("gender"), Some(val)) => match config::GenderFilter::from_str(val) {
+            Some(filter) => {
+                cfg.gender_filter = filter;
+                cfg.save()?;
+                println!(
+                    "{} gender = {}",
+                    "Updated:".green(),
+                    cfg.gender_filter.display().bright_white()
+                );
             }
-        }
+            None => {
+                println!(
+                    "{} Unknown value '{}'. Use: female, male, trans-female, trans-male, any",
+                    "Error:".red(),
+                    val
+                );
+            }
+        },
         (Some(k), _) => {
-            println!("{} Unknown setting '{}'. Available: gender", "Error:".red(), k);
+            println!(
+                "{} Unknown setting '{}'. Available: gender",
+                "Error:".red(),
+                k
+            );
         }
     }
 
@@ -1115,14 +1481,19 @@ fn configure(key: Option<String>, value: Option<String>) -> anyhow::Result<()> {
 }
 
 fn import_from_json(db: &Database, file_path: &str) -> anyhow::Result<()> {
-    use std::fs;
     use models::Performer;
+    use std::fs;
 
-    println!("{}", format!("Importing performers from {}...", file_path).bright_cyan().bold());
+    println!(
+        "{}",
+        format!("Importing performers from {}...", file_path)
+            .bright_cyan()
+            .bold()
+    );
     println!();
 
-    let json_data = fs::read_to_string(file_path)
-        .with_context(|| format!("Failed to read {}", file_path))?;
+    let json_data =
+        fs::read_to_string(file_path).with_context(|| format!("Failed to read {}", file_path))?;
 
     let performers: Vec<Performer> = serde_json::from_str(&json_data)
         .with_context(|| format!("Failed to parse JSON from {}", file_path))?;
@@ -1133,20 +1504,35 @@ fn import_from_json(db: &Database, file_path: &str) -> anyhow::Result<()> {
     for performer in performers {
         match db.add_performer(&performer) {
             Ok(_) => {
-                println!("{} {} {}",
-                    "[OK]".green(), "Imported:".white(),
-                    performer.name.bright_white().bold());
+                println!(
+                    "{} {} {}",
+                    "[OK]".green(),
+                    "Imported:".white(),
+                    performer.name.bright_white().bold()
+                );
                 success_count += 1;
             }
             Err(e) => {
-                println!("{} {} {}: {}",
-                    "[X]".red(), "Failed:".white(), performer.name, e);
+                println!(
+                    "{} {} {}: {}",
+                    "[X]".red(),
+                    "Failed:".white(),
+                    performer.name,
+                    e
+                );
                 fail_count += 1;
             }
         }
     }
 
     println!();
-    println!("{}", format!("Imported {} performers ({} failed)", success_count, fail_count).green());
+    println!(
+        "{}",
+        format!(
+            "Imported {} performers ({} failed)",
+            success_count, fail_count
+        )
+        .green()
+    );
     Ok(())
 }

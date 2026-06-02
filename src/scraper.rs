@@ -1,6 +1,6 @@
+use crate::models::Performer;
 use anyhow::{Context, Result};
 use scraper::{Html, Selector};
-use crate::models::Performer;
 
 /// Scrapes performer data from various sources
 pub struct Scraper {
@@ -32,16 +32,15 @@ impl Scraper {
 
     /// Scrapes data from FreeOnes
     async fn scrape_freeones(&self, name: &str) -> Result<Performer> {
-        let url_name = name
-            .to_lowercase()
-            .replace(" ", "-")
-            .replace("'", "");
+        let url_name = name.to_lowercase().replace(" ", "-").replace("'", "");
 
         let url = format!("https://www.freeones.com/{}", url_name);
 
         log::info!("Fetching: {}", url);
 
-        let response = self.client.get(&url)
+        let response = self
+            .client
+            .get(&url)
             .send()
             .await
             .context("Failed to fetch FreeOnes page")?;
@@ -64,17 +63,26 @@ impl Scraper {
             }
         }
 
-        if let Some(eth_elem) = document.select(&Selector::parse(".ethnicity").unwrap()).next() {
+        if let Some(eth_elem) = document
+            .select(&Selector::parse(".ethnicity").unwrap())
+            .next()
+        {
             performer.ethnicity = Some(eth_elem.text().collect::<String>().trim().to_string());
         }
 
-        if let Some(hair_elem) = document.select(&Selector::parse(".hair-color").unwrap()).next() {
+        if let Some(hair_elem) = document
+            .select(&Selector::parse(".hair-color").unwrap())
+            .next()
+        {
             performer.hair_color = Some(hair_elem.text().collect::<String>().trim().to_string());
         }
 
         performer.body_type = "Average".to_string();
 
-        if let Some(img_elem) = document.select(&Selector::parse("img.profile-pic").unwrap()).next() {
+        if let Some(img_elem) = document
+            .select(&Selector::parse("img.profile-pic").unwrap())
+            .next()
+        {
             if let Some(src) = img_elem.value().attr("src") {
                 performer.profile_image_url = Some(src.to_string());
             }
@@ -88,16 +96,15 @@ impl Scraper {
     /// Scrapes data from IAFD (Internet Adult Film Database)
     #[allow(dead_code)]
     async fn scrape_iafd(&self, name: &str) -> Result<Performer> {
-        let url_name = name
-            .to_lowercase()
-            .replace(" ", "")
-            .replace("'", "");
+        let url_name = name.to_lowercase().replace(" ", "").replace("'", "");
 
         let url = format!("https://www.iafd.com/person.rme/perfid={}/", url_name);
 
         log::info!("Fetching: {}", url);
 
-        let response = self.client.get(&url)
+        let response = self
+            .client
+            .get(&url)
             .send()
             .await
             .context("Failed to fetch IAFD page")?;

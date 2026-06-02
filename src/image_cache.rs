@@ -15,8 +15,7 @@ impl ImageCache {
             .join("luminary")
             .join("images");
 
-        std::fs::create_dir_all(&cache_dir)
-            .context("Failed to create cache directory")?;
+        std::fs::create_dir_all(&cache_dir).context("Failed to create cache directory")?;
 
         Ok(ImageCache { cache_dir })
     }
@@ -58,7 +57,7 @@ impl ImageCache {
 
         let ext = url
             .split('.')
-            .last()
+            .next_back()
             .and_then(|s| s.split('?').next())
             .filter(|s| ["jpg", "jpeg", "png", "gif", "webp"].contains(s))
             .unwrap_or("jpg");
@@ -69,8 +68,7 @@ impl ImageCache {
     /// Clears all cached images
     pub fn clear(&self) -> Result<()> {
         if self.cache_dir.exists() {
-            std::fs::remove_dir_all(&self.cache_dir)
-                .context("Failed to clear cache")?;
+            std::fs::remove_dir_all(&self.cache_dir).context("Failed to clear cache")?;
             std::fs::create_dir_all(&self.cache_dir)
                 .context("Failed to recreate cache directory")?;
         }

@@ -1,6 +1,6 @@
+use crate::models::{Performer, SearchFilters};
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
-use crate::models::{Performer, SearchFilters};
 
 /// Database manager for storing performers
 pub struct Database {
@@ -10,8 +10,7 @@ pub struct Database {
 impl Database {
     /// Creates a new database connection
     pub fn new(path: &str) -> Result<Self> {
-        let conn = Connection::open(path)
-            .context("Failed to open database")?;
+        let conn = Connection::open(path).context("Failed to open database")?;
         let db = Database { conn };
         db.init_schema()?;
         Ok(db)
@@ -20,10 +19,9 @@ impl Database {
     /// Initializes the database schema
     fn init_schema(&self) -> Result<()> {
         // Add embedding column if missing (safe to run on existing DBs)
-        let _ = self.conn.execute(
-            "ALTER TABLE performers ADD COLUMN embedding TEXT",
-            [],
-        );
+        let _ = self
+            .conn
+            .execute("ALTER TABLE performers ADD COLUMN embedding TEXT", []);
 
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS aliases (
@@ -62,10 +60,8 @@ impl Database {
             "CREATE INDEX IF NOT EXISTS idx_body_type ON performers(body_type)",
             [],
         )?;
-        self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_age ON performers(age)",
-            [],
-        )?;
+        self.conn
+            .execute("CREATE INDEX IF NOT EXISTS idx_age ON performers(age)", [])?;
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_ethnicity ON performers(ethnicity)",
             [],
@@ -123,9 +119,9 @@ impl Database {
 
     /// Resolves an alias to its canonical name, if one exists
     pub fn resolve_alias(&self, name: &str) -> Result<Option<String>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT canonical FROM aliases WHERE alias = ?1"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT canonical FROM aliases WHERE alias = ?1")?;
         let mut rows = stmt.query(rusqlite::params![name.to_lowercase()])?;
         if let Some(row) = rows.next()? {
             let canonical: String = row.get(0)?;
@@ -136,12 +132,14 @@ impl Database {
 
     /// Lists all stored aliases
     pub fn list_aliases(&self) -> Result<Vec<(String, String)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT alias, canonical FROM aliases ORDER BY alias"
-        )?;
-        let pairs = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?.collect::<Result<Vec<_>, _>>()?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT alias, canonical FROM aliases ORDER BY alias")?;
+        let pairs = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(pairs)
     }
 
@@ -162,9 +160,9 @@ impl Database {
         }
 
         // Exact match first
-        let mut stmt = self.conn.prepare(
-            "SELECT data FROM performers WHERE name = ?1"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT data FROM performers WHERE name = ?1")?;
         let mut rows = stmt.query(params![name])?;
         if let Some(row) = rows.next()? {
             let data: String = row.get(0)?;
@@ -172,7 +170,8 @@ impl Database {
         }
 
         // Fallback: all words present in name (any order, case-insensitive)
-        let words: Vec<String> = name.split_whitespace()
+        let words: Vec<String> = name
+            .split_whitespace()
             .map(|w| format!("%{}%", w.to_lowercase()))
             .collect();
 
@@ -180,7 +179,8 @@ impl Database {
             return Ok(None);
         }
 
-        let conditions = words.iter()
+        let conditions = words
+            .iter()
             .enumerate()
             .map(|(i, _)| format!("LOWER(name) LIKE ?{}", i + 1))
             .collect::<Vec<_>>()
@@ -189,9 +189,8 @@ impl Database {
         let query = format!("SELECT data FROM performers WHERE {}", conditions);
         let mut stmt = self.conn.prepare(&query)?;
 
-        let param_refs: Vec<&dyn rusqlite::ToSql> = words.iter()
-            .map(|w| w as &dyn rusqlite::ToSql)
-            .collect();
+        let param_refs: Vec<&dyn rusqlite::ToSql> =
+            words.iter().map(|w| w as &dyn rusqlite::ToSql).collect();
 
         let mut rows = stmt.query(param_refs.as_slice())?;
         if let Some(row) = rows.next()? {
@@ -268,9 +267,9 @@ impl Database {
 
     /// Retrieves the stored face embedding for a performer
     pub fn get_embedding(&self, name: &str) -> Result<Option<Vec<f32>>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT embedding FROM performers WHERE name = ?1"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT embedding FROM performers WHERE name = ?1")?;
         let mut rows = stmt.query(rusqlite::params![name])?;
         if let Some(row) = rows.next()? {
             let json: Option<String> = row.get(0)?;
@@ -284,9 +283,9 @@ impl Database {
 
     /// Gets all performers that have a face_url stored (needed for embedding generation)
     pub fn get_performers_without_embedding(&self) -> Result<Vec<crate::models::Performer>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT data FROM performers WHERE embedding IS NULL"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT data FROM performers WHERE embedding IS NULL")?;
         let performers = stmt
             .query_map([], |row| {
                 let data: String = row.get(0)?;
@@ -298,20 +297,16 @@ impl Database {
 
     /// Removes a performer by name
     pub fn remove_performer(&self, name: &str) -> Result<()> {
-        self.conn.execute(
-            "DELETE FROM performers WHERE name = ?1",
-            params![name],
-        )?;
+        self.conn
+            .execute("DELETE FROM performers WHERE name = ?1", params![name])?;
         Ok(())
     }
 
     /// Gets the count of performers
     pub fn count(&self) -> Result<usize> {
-        let count: usize = self.conn.query_row(
-            "SELECT COUNT(*) FROM performers",
-            [],
-            |row| row.get(0),
-        )?;
+        let count: usize = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM performers", [], |row| row.get(0))?;
         Ok(count)
     }
 }

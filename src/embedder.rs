@@ -5,7 +5,7 @@ use std::process::Command;
 /// Calls face_embed.py to generate a 512-dim ArcFace embedding for an image URL.
 pub fn generate_embedding(image_url: &str) -> Result<Vec<f32>> {
     let script = find_script()?;
-    let python  = find_python()?;
+    let python = find_python()?;
 
     log::info!("Generating face embedding: {}", image_url);
 
@@ -18,7 +18,10 @@ pub fn generate_embedding(image_url: &str) -> Result<Vec<f32>> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     if stdout.trim().is_empty() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("face_embed.py produced no output.\nstderr: {}", stderr.trim());
+        anyhow::bail!(
+            "face_embed.py produced no output.\nstderr: {}",
+            stderr.trim()
+        );
     }
 
     let result: serde_json::Value = serde_json::from_str(stdout.trim())
@@ -44,11 +47,15 @@ pub fn generate_embedding(image_url: &str) -> Result<Vec<f32>> {
 
 /// Cosine similarity between two embedding vectors (range −1..1, higher = more similar).
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() { return 0.0; }
-    let dot:    f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
     let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
     let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a == 0.0 || norm_b == 0.0 { return 0.0; }
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 0.0;
+    }
     dot / (norm_a * norm_b)
 }
 
@@ -86,19 +93,21 @@ fn find_python() -> Result<String> {
 
 fn find_script() -> Result<PathBuf> {
     let candidates: Vec<PathBuf> = [
-        std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("face_embed.py"))),
-        std::env::current_dir().ok().map(|d| d.join("face_embed.py")),
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("face_embed.py"))),
+        std::env::current_dir()
+            .ok()
+            .map(|d| d.join("face_embed.py")),
         Some(PathBuf::from("face_embed.py")),
     ]
     .into_iter()
     .flatten()
     .collect();
 
-    candidates.into_iter()
-        .find(|p| p.exists())
-        .ok_or_else(|| anyhow::anyhow!(
-            "face_embed.py not found. Place it alongside the luminary binary."
-        ))
+    candidates.into_iter().find(|p| p.exists()).ok_or_else(|| {
+        anyhow::anyhow!("face_embed.py not found. Place it alongside the luminary binary.")
+    })
 }
 
 #[cfg(test)]
@@ -117,15 +126,15 @@ mod tests {
         let a = vec![1.0, 0.0];
         let b = vec![-1.0, 0.0];
         assert!((cosine_similarity(&a, &b) + 1.0).abs() < 1e-6); // -1
-        assert!(similarity_pct(-1.0) < 1.0);                     // ~0%
+        assert!(similarity_pct(-1.0) < 1.0); // ~0%
     }
 
     #[test]
     fn orthogonal_vectors_are_midpoint() {
         let a = vec![1.0, 0.0];
         let b = vec![0.0, 1.0];
-        assert!(cosine_similarity(&a, &b).abs() < 1e-6);          // 0
-        assert!((similarity_pct(0.0) - 50.0).abs() < 1e-4);       // 50%
+        assert!(cosine_similarity(&a, &b).abs() < 1e-6); // 0
+        assert!((similarity_pct(0.0) - 50.0).abs() < 1e-4); // 50%
     }
 
     #[test]

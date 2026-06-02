@@ -1,7 +1,7 @@
-use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
 use crate::config::GenderFilter;
 use crate::models::Performer;
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 
 const TPDB_API_BASE: &str = "https://api.theporndb.net";
 
@@ -9,7 +9,7 @@ const TPDB_API_BASE: &str = "https://api.theporndb.net";
 fn to_title_case(s: &str) -> String {
     let mut chars = s.chars();
     match chars.next() {
-        None    => String::new(),
+        None => String::new(),
         Some(f) => f.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase(),
     }
 }
@@ -114,11 +114,16 @@ impl TpdbClient {
 
     /// Search for a performer by name
     pub async fn search_performer(&self, name: &str) -> Result<Option<Performer>> {
-        let url = format!("{}/performers?q={}", TPDB_API_BASE, urlencoding::encode(name));
+        let url = format!(
+            "{}/performers?q={}",
+            TPDB_API_BASE,
+            urlencoding::encode(name)
+        );
 
         log::info!("Searching ThePornDB: {}", name);
 
-        let response = self.client
+        let response = self
+            .client
             .get(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .send()
@@ -129,7 +134,9 @@ impl TpdbClient {
             anyhow::bail!("ThePornDB returned status: {}", response.status());
         }
 
-        let search_result: TpdbSearchResponse = response.json().await
+        let search_result: TpdbSearchResponse = response
+            .json()
+            .await
             .context("Failed to parse ThePornDB search response")?;
 
         if let Some(tpdb_performer) = search_result.data.first() {
@@ -145,7 +152,8 @@ impl TpdbClient {
 
         log::info!("Fetching performer details: {}", id);
 
-        let response = self.client
+        let response = self
+            .client
             .get(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .send()
@@ -156,7 +164,9 @@ impl TpdbClient {
             anyhow::bail!("ThePornDB returned status: {}", response.status());
         }
 
-        let performer_response: TpdbPerformerResponse = response.json().await
+        let performer_response: TpdbPerformerResponse = response
+            .json()
+            .await
             .context("Failed to parse ThePornDB performer response")?;
 
         Ok(Some(self.convert_to_performer(performer_response.data)))
@@ -204,17 +214,17 @@ impl TpdbClient {
     /// Hip min is applied server-side; waist range and hip max are filtered client-side.
     pub async fn search_by_attributes(
         &self,
-        ethnicity:     Option<&str>,
-        hair_colour:   Option<&str>,
-        eye_colour:    Option<&str>,
-        cup:           Option<&str>,
-        hips_target:   Option<u32>,
-        waist_target:  Option<u32>,
-        whr_target:    Option<f64>,
-        age_min:       Option<u32>,
-        age_max:       Option<u32>,
+        ethnicity: Option<&str>,
+        hair_colour: Option<&str>,
+        eye_colour: Option<&str>,
+        cup: Option<&str>,
+        hips_target: Option<u32>,
+        waist_target: Option<u32>,
+        whr_target: Option<f64>,
+        age_min: Option<u32>,
+        age_max: Option<u32>,
         gender_filter: &GenderFilter,
-        fetch:         usize,
+        fetch: usize,
     ) -> Result<Vec<Performer>> {
         let mut url = format!("{}/performers?per_page={}", TPDB_API_BASE, fetch);
 
@@ -222,16 +232,27 @@ impl TpdbClient {
             url.push_str(&format!("&gender={}", g));
         }
         if let Some(e) = ethnicity {
-            url.push_str(&format!("&ethnicity={}", urlencoding::encode(&to_title_case(e))));
+            url.push_str(&format!(
+                "&ethnicity={}",
+                urlencoding::encode(&to_title_case(e))
+            ));
         }
         if let Some(h) = hair_colour {
-            url.push_str(&format!("&hair_colour={}", urlencoding::encode(&to_title_case(h))));
+            url.push_str(&format!(
+                "&hair_colour={}",
+                urlencoding::encode(&to_title_case(h))
+            ));
         }
         if let Some(e) = eye_colour {
-            url.push_str(&format!("&eye_colour={}", urlencoding::encode(&to_title_case(e))));
+            url.push_str(&format!(
+                "&eye_colour={}",
+                urlencoding::encode(&to_title_case(e))
+            ));
         }
         if let Some(c) = cup {
-            let cup_letter = c.trim_start_matches(|ch: char| ch.is_ascii_digit()).to_uppercase();
+            let cup_letter = c
+                .trim_start_matches(|ch: char| ch.is_ascii_digit())
+                .to_uppercase();
             url.push_str(&format!("&cup={}", urlencoding::encode(&cup_letter)));
         }
         // Hip: use server-side minimum (target - 4 inches)
@@ -245,22 +266,25 @@ impl TpdbClient {
 
         log::info!("Attribute search: {}", url);
 
-        let resp = self.client.get(&url)
+        let resp = self
+            .client
+            .get(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
-            .send().await
+            .send()
+            .await
             .context("Failed to query TPDB")?;
 
         if !resp.status().is_success() {
             anyhow::bail!("TPDB returned {}", resp.status());
         }
 
-        let result: TpdbSearchResponse = resp.json().await
-            .context("Failed to parse TPDB response")?;
+        let result: TpdbSearchResponse =
+            resp.json().await.context("Failed to parse TPDB response")?;
 
-        let mut performers: Vec<Performer> = result.data.into_iter()
-            .filter(|p| gender_filter.matches(
-                p.gender.as_deref().or(p.extras.gender.as_deref())
-            ))
+        let mut performers: Vec<Performer> = result
+            .data
+            .into_iter()
+            .filter(|p| gender_filter.matches(p.gender.as_deref().or(p.extras.gender.as_deref())))
             .map(|p| self.convert_to_performer(p))
             .collect();
 
@@ -268,58 +292,70 @@ impl TpdbClient {
         if let Some(whr) = whr_target {
             let tolerance = 0.05;
             performers.retain(|p| {
-                crate::recommender::performer_whr(p)
-                    .map_or(false, |r| (r - whr).abs() <= tolerance)
+                crate::recommender::performer_whr(p).is_some_and(|r| (r - whr).abs() <= tolerance)
             });
         }
         if let Some(h) = hips_target {
             let hip_max = h + 4;
             performers.retain(|p| {
                 // Keep if no hip data (can't verify) or within range
-                p.measurements.as_deref()
+                p.measurements
+                    .as_deref()
                     .and_then(|m| m.split('-').nth(2))
-                    .and_then(|s| s.trim_end_matches(|c: char| !c.is_ascii_digit()).parse::<u32>().ok())
-                    .map_or(false, |hip| hip >= h.saturating_sub(4) && hip <= hip_max)
+                    .and_then(|s| {
+                        s.trim_end_matches(|c: char| !c.is_ascii_digit())
+                            .parse::<u32>()
+                            .ok()
+                    })
+                    .is_some_and(|hip| hip >= h.saturating_sub(4) && hip <= hip_max)
             });
         }
         if let Some(w) = waist_target {
             performers.retain(|p| {
-                p.measurements.as_deref()
+                p.measurements
+                    .as_deref()
                     .and_then(|m| m.split('-').nth(1))
                     .and_then(|s| s.trim().parse::<u32>().ok())
-                    .map_or(false, |waist| {
-                        waist >= w.saturating_sub(4) && waist <= w + 4
-                    })
+                    .is_some_and(|waist| waist >= w.saturating_sub(4) && waist <= w + 4)
             });
         }
         if let Some(max) = age_max {
-            performers.retain(|p| p.age.map_or(true, |a| a <= max));
+            performers.retain(|p| p.age.is_none_or(|a| a <= max));
         }
 
         Ok(performers)
     }
 
     /// Find performers similar to a single performer by their TPDB UUID.
-    pub async fn similar_to(&self, tpdb_uuid: &str, gender_filter: &GenderFilter) -> Result<Vec<Performer>> {
+    pub async fn similar_to(
+        &self,
+        tpdb_uuid: &str,
+        gender_filter: &GenderFilter,
+    ) -> Result<Vec<Performer>> {
         let url = format!("{}/performers/{}/similar", TPDB_API_BASE, tpdb_uuid);
         log::info!("Similar to {}: {}", tpdb_uuid, url);
 
-        let resp = self.client.get(&url)
+        let resp = self
+            .client
+            .get(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
-            .send().await
+            .send()
+            .await
             .context("Failed to query TPDB similar")?;
 
         if !resp.status().is_success() {
             anyhow::bail!("TPDB returned {}", resp.status());
         }
 
-        let result: TpdbSearchResponse = resp.json().await
+        let result: TpdbSearchResponse = resp
+            .json()
+            .await
             .context("Failed to parse similar response")?;
 
-        Ok(result.data.into_iter()
-            .filter(|p| gender_filter.matches(
-                p.gender.as_deref().or(p.extras.gender.as_deref())
-            ))
+        Ok(result
+            .data
+            .into_iter()
+            .filter(|p| gender_filter.matches(p.gender.as_deref().or(p.extras.gender.as_deref())))
             .map(|p| self.convert_to_performer(p))
             .collect())
     }
@@ -335,24 +371,31 @@ impl TpdbClient {
     ) -> Result<Vec<Performer>> {
         // ── Primary: similar performers ──────────────────────────────────────
         if !liked_ids.is_empty() {
-            let ids_str = liked_ids.iter()
+            let ids_str = liked_ids
+                .iter()
                 .map(|id| id.to_string())
                 .collect::<Vec<_>>()
                 .join(",");
             let url = format!("{}/performers/similar?ids={}", TPDB_API_BASE, ids_str);
             log::info!("Similar performers: {}", url);
 
-            let resp = self.client.get(&url)
+            let resp = self
+                .client
+                .get(&url)
                 .header("Authorization", format!("Bearer {}", self.api_key))
-                .send().await;
+                .send()
+                .await;
 
             if let Ok(r) = resp {
                 if r.status().is_success() {
                     if let Ok(result) = r.json::<TpdbSearchResponse>().await {
-                        let performers: Vec<Performer> = result.data.into_iter()
-                            .filter(|p| gender_filter.matches(
-                                p.gender.as_deref().or(p.extras.gender.as_deref())
-                            ))
+                        let performers: Vec<Performer> = result
+                            .data
+                            .into_iter()
+                            .filter(|p| {
+                                gender_filter
+                                    .matches(p.gender.as_deref().or(p.extras.gender.as_deref()))
+                            })
                             .map(|p| self.convert_to_performer(p))
                             .collect();
                         if !performers.is_empty() {
@@ -369,31 +412,39 @@ impl TpdbClient {
             url.push_str(&format!("&gender={}", g));
         }
         if let Some(eth) = ethnicity {
-            url.push_str(&format!("&ethnicity={}", urlencoding::encode(&to_title_case(eth))));
+            url.push_str(&format!(
+                "&ethnicity={}",
+                urlencoding::encode(&to_title_case(eth))
+            ));
         }
         if let Some(cup) = top_cup {
-            let cup_letter = cup.trim_start_matches(|c: char| c.is_ascii_digit()).to_uppercase();
+            let cup_letter = cup
+                .trim_start_matches(|c: char| c.is_ascii_digit())
+                .to_uppercase();
             url.push_str(&format!("&cup={}", urlencoding::encode(&cup_letter)));
         }
 
         log::info!("Fallback search: {}", url);
 
-        let resp = self.client.get(&url)
+        let resp = self
+            .client
+            .get(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
-            .send().await
+            .send()
+            .await
             .context("Failed to query ThePornDB")?;
 
         if !resp.status().is_success() {
             return Ok(vec![]);
         }
 
-        let result: TpdbSearchResponse = resp.json().await
-            .context("Failed to parse TPDB response")?;
+        let result: TpdbSearchResponse =
+            resp.json().await.context("Failed to parse TPDB response")?;
 
-        Ok(result.data.into_iter()
-            .filter(|p| gender_filter.matches(
-                p.gender.as_deref().or(p.extras.gender.as_deref())
-            ))
+        Ok(result
+            .data
+            .into_iter()
+            .filter(|p| gender_filter.matches(p.gender.as_deref().or(p.extras.gender.as_deref())))
             .map(|p| self.convert_to_performer(p))
             .collect())
     }
@@ -403,7 +454,10 @@ impl TpdbClient {
     /// over parsing the measurements string.
     fn infer_body_type(&self, tpdb: &TpdbPerformer) -> String {
         // Cup score: prefer direct cupsize field, fall back to parsing measurements
-        let cup = tpdb.extras.cupsize.as_deref()
+        let cup = tpdb
+            .extras
+            .cupsize
+            .as_deref()
             .map(Self::cup_score)
             .or_else(|| tpdb.extras.measurements.as_deref().map(Self::cup_score))
             .unwrap_or(2);
@@ -413,26 +467,38 @@ impl TpdbClient {
             (Some(w), Some(h)) => {
                 let waist: f64 = w.parse().unwrap_or(0.0);
                 let hips: f64 = h.parse().unwrap_or(0.0);
-                if hips > 0.0 { Some(waist / hips) } else { None }
+                if hips > 0.0 {
+                    Some(waist / hips)
+                } else {
+                    None
+                }
             }
-            _ => tpdb.extras.measurements.as_deref().and_then(Self::waist_hip_ratio),
+            _ => tpdb
+                .extras
+                .measurements
+                .as_deref()
+                .and_then(Self::waist_hip_ratio),
         };
 
-        let weight = tpdb.extras.weight.as_deref().and_then(Self::parse_weight_lbs);
+        let weight = tpdb
+            .extras
+            .weight
+            .as_deref()
+            .and_then(Self::parse_weight_lbs);
 
-        if weight.map_or(false, |w| w > 180.0) {
+        if weight.is_some_and(|w| w > 180.0) {
             return "BBW".to_string();
         }
-        if cup >= 5 || whr.map_or(false, |r| r < 0.70) {
+        if cup >= 5 || whr.is_some_and(|r| r < 0.70) {
             return "Curvy".to_string();
         }
-        if cup >= 4 || whr.map_or(false, |r| r < 0.75) {
+        if cup >= 4 || whr.is_some_and(|r| r < 0.75) {
             return "Full-Figured".to_string();
         }
-        if cup <= 1 && weight.map_or(false, |w| w < 110.0) {
+        if cup <= 1 && weight.is_some_and(|w| w < 110.0) {
             return "Petite".to_string();
         }
-        if cup <= 2 && whr.map_or(false, |r| r > 0.78) {
+        if cup <= 2 && whr.is_some_and(|r| r > 0.78) {
             return "Slim".to_string();
         }
         "Average".to_string()
@@ -444,26 +510,32 @@ impl TpdbClient {
         let cup = bust.trim_start_matches(|c: char| c.is_ascii_digit());
         match cup.to_uppercase().as_str() {
             "AA" | "AAA" => 0,
-            "A"          => 1,
-            "B"          => 2,
-            "C"          => 3,
-            "D"          => 4,
-            "DD" | "E"   => 5,
-            "DDD" | "F"  => 6,
+            "A" => 1,
+            "B" => 2,
+            "C" => 3,
+            "D" => 4,
+            "DD" | "E" => 5,
+            "DDD" | "F" => 6,
             "G" | "H" | "I" | "J" | "K" => 7,
-            _            => 2,
+            _ => 2,
         }
     }
 
     /// Parses waist-to-hip ratio from "34B-24-36" style strings
     fn waist_hip_ratio(measurements: &str) -> Option<f64> {
         let parts: Vec<&str> = measurements.split('-').collect();
-        if parts.len() < 3 { return None; }
+        if parts.len() < 3 {
+            return None;
+        }
         let waist: f64 = parts[1].trim().parse().ok()?;
-        let hips: f64 = parts[2].trim()
+        let hips: f64 = parts[2]
+            .trim()
             .trim_end_matches(|c: char| !c.is_ascii_digit())
-            .parse().ok()?;
-        if hips == 0.0 { return None; }
+            .parse()
+            .ok()?;
+        if hips == 0.0 {
+            return None;
+        }
         Some(waist / hips)
     }
 
