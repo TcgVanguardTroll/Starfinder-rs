@@ -148,12 +148,12 @@ enum Commands {
         /// What to match on for --like: face, body, or both (default: both)
         #[arg(long = "match", value_parser = ["face", "body", "both"])]
         match_mode: Option<String>,
-        /// Copy face attributes (ethnicity, hair, eye) from this performer
+        /// Match this performer's face (repeatable — blends multiple faces)
         #[arg(long)]
-        looks_like: Option<String>,
-        /// Copy body shape (hips, waist, cup) from this performer
+        looks_like: Vec<String>,
+        /// Match this performer's build (repeatable — blends multiple bodies)
         #[arg(long)]
-        body_like: Option<String>,
+        body_like: Vec<String>,
         /// Hair color (Blonde, Brunette, Black, Red, Auburn)
         #[arg(long)]
         hair: Option<String>,
@@ -892,8 +892,8 @@ async fn find(
     db: &Database,
     like: Option<String>,
     match_mode: Option<String>,
-    looks_like: Option<String>,
-    body_like: Option<String>,
+    looks_like: Vec<String>,
+    body_like: Vec<String>,
     hair_arg: Option<String>,
     eye_arg: Option<String>,
     eth_arg: Option<String>,
@@ -919,16 +919,16 @@ async fn find(
     if let Some(name) = like {
         match match_mode.as_deref().unwrap_or("both") {
             "face" => {
-                looks_like = Some(name);
+                looks_like.push(name);
                 face_only = true;
             }
             "body" => {
-                body_like = Some(name);
+                body_like.push(name);
             }
             _ => {
                 // both: face ranking + body filters, scored as a 50/50 blend
-                looks_like = Some(name.clone());
-                body_like = Some(name);
+                looks_like.push(name.clone());
+                body_like.push(name);
                 blend = true;
             }
         }
@@ -954,15 +954,27 @@ async fn find(
     let mut waist = waist_arg;
     let mut whr = whr_arg;
 
-    let face_ranking = looks_like
-        .as_deref()
-        .map(|n| db.get_embedding(n).ok().flatten().is_some())
-        .unwrap_or(false);
+    // Resolve every reference performer up front.
+    let resolve = |names: &[String]| -> anyhow::Result<Vec<models::Performer>> {
+        names
+            .iter()
+            .map(|n| {
+                db.get_performer(n)?
+                    .ok_or_else(|| anyhow::anyhow!("'{}' not in database", n))
+            })
+            .collect()
+    };
+    let looks_refs = resolve(&looks_like)?;
+    let body_refs_explicit = resolve(&body_like)?;
 
-    if let Some(ref name) = looks_like {
-        let p = db
-            .get_performer(name)?
-            .ok_or_else(|| anyhow::anyhow!("'{}' not in database", name))?;
+    let face_ranking = looks_refs
+        .iter()
+        .any(|p| db.get_embedding(&p.name).ok().flatten().is_some());
+
+    // Coloring filters only when there's a single face reference; blending
+    // multiple faces spans colorings, so the face embedding handles that.
+    if looks_refs.len() == 1 {
+        let p = &looks_refs[0];
         if ethnicity.is_none() {
             ethnicity = p.ethnicity.clone();
         }
@@ -974,55 +986,55 @@ async fn find(
         }
     }
 
-    // Body reference (butt + boobs): explicit --body-like, else --looks-like.
+    // Body references: explicit --body-like, else fall back to --looks-like.
     // Skipped entirely in --face-only mode.
-    let body_ref_name = if face_only {
-        None
+    let body_refs: Vec<models::Performer> = if face_only {
+        Vec::new()
+    } else if !body_refs_explicit.is_empty() {
+        body_refs_explicit
     } else {
-        body_like.clone().or_else(|| looks_like.clone())
+        looks_refs.clone()
     };
-    if let Some(ref name) = body_ref_name {
-        let p = db
-            .get_performer(name)?
-            .ok_or_else(|| anyhow::anyhow!("'{}' not in database", name))?;
-        // Only WHR (the defining build shape) becomes a hard filter when derived
-        // from a reference. Cup, hips, height and weight are captured by the
-        // k-NN ranking instead, so we don't gate everyone out on an exact cup.
-        // (Explicit --cup / --hips still hard-filter — they're set before this.)
-        if whr.is_none() {
-            whr = recommender::performer_whr(&p);
-        }
+
+    // Only WHR (the defining build shape) becomes a derived hard filter, and
+    // only with a single body reference; cup/hips/height/weight are captured by
+    // the k-NN ranking. (Explicit --cup/--hips still hard-filter.)
+    if whr.is_none() && body_refs.len() == 1 {
+        whr = recommender::performer_whr(&body_refs[0]);
     }
     if whr.is_some() {
         waist = None;
     } // redundant with WHR
 
-    // ── Tattoo: SOFT bonus only — preferred, never required (off in face-only) ──
+    // ── Tattoo: SOFT bonus only — from the first body reference ───────────
     let tattoo_pref: Option<String> = if face_only {
         None
     } else {
         tattoo_arg.clone().or_else(|| {
-            body_ref_name
-                .as_ref()
-                .and_then(|n| db.get_performer(n).ok().flatten())
-                .and_then(|p| {
-                    let locs = recommender::parse_tattoos(p.tattoos.as_deref());
-                    locs.iter()
-                        .find(|t| t.contains("lower back"))
-                        .cloned()
-                        .or_else(|| locs.iter().find(|t| t.contains("back")).cloned())
-                })
+            body_refs.first().and_then(|p| {
+                let locs = recommender::parse_tattoos(p.tattoos.as_deref());
+                locs.iter()
+                    .find(|t| t.contains("lower back"))
+                    .cloned()
+                    .or_else(|| locs.iter().find(|t| t.contains("back")).cloned())
+            })
         })
     };
 
     // ── Display criteria ──────────────────────────────────────────────────
     println!("{}", "Searching for performers with:".bright_cyan().bold());
     let mut criteria: Vec<String> = vec![];
-    if let Some(ref n) = looks_like {
-        criteria.push(format!("face like {}", n.bright_white()));
+    if !looks_like.is_empty() {
+        criteria.push(format!(
+            "face like {}",
+            looks_like.join(" + ").bright_white()
+        ));
     }
-    if let Some(ref n) = body_like {
-        criteria.push(format!("body like {}", n.bright_white()));
+    if !body_like.is_empty() {
+        criteria.push(format!(
+            "body like {}",
+            body_like.join(" + ").bright_white()
+        ));
     }
     if let Some(ref v) = ethnicity {
         criteria.push(format!("ethnicity: {}", v.bright_white()));
@@ -1104,14 +1116,18 @@ async fn find(
         });
     }
 
-    // ── Ranking references ────────────────────────────────────────────────
-    let ref_embedding = looks_like
-        .as_deref()
-        .and_then(|name| db.get_embedding(name).ok().flatten());
-    let ref_body_vec = body_ref_name
-        .as_ref()
-        .and_then(|n| db.get_performer(n).ok().flatten())
-        .and_then(|p| recommender::feature_vector(&p));
+    // ── Ranking references (averaged across multiple references) ──────────
+    let looks_embeddings: Vec<Vec<f32>> = looks_refs
+        .iter()
+        .filter_map(|p| db.get_embedding(&p.name).ok().flatten())
+        .collect();
+    let ref_embedding = embedder::average_embeddings(&looks_embeddings);
+
+    let body_vecs: Vec<_> = body_refs
+        .iter()
+        .filter_map(recommender::feature_vector)
+        .collect();
+    let ref_body_vec = recommender::FeatureVec::average(&body_vecs);
 
     // Cap on-the-fly embeddings; pre-rank by body distance so we spend them well.
     const MAX_ONTHEFLY_EMBEDS: usize = 16;
@@ -1309,7 +1325,7 @@ async fn find(
         }
     }
     println!();
-    if ref_embedding.is_none() && looks_like.is_some() {
+    if ref_embedding.is_none() && !looks_like.is_empty() {
         println!(
             "{}",
             "  Tip: run 'luminary embed' first for ML face-similarity ranking".bright_black()

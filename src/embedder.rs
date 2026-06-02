@@ -101,6 +101,35 @@ pub fn generate_centroid_embedding(image_urls: &[String]) -> Option<Vec<f32>> {
     Some(sum)
 }
 
+/// Averages several stored embeddings into one L2-normalised centroid, so a
+/// search can match a *blend* of multiple reference faces. Returns None if empty.
+pub fn average_embeddings(embeddings: &[Vec<f32>]) -> Option<Vec<f32>> {
+    let mut sum: Vec<f32> = Vec::new();
+    let mut count = 0usize;
+    for emb in embeddings {
+        let mut e = emb.clone();
+        normalize(&mut e);
+        if sum.is_empty() {
+            sum = e;
+        } else if sum.len() == e.len() {
+            for (s, x) in sum.iter_mut().zip(e.iter()) {
+                *s += *x;
+            }
+        } else {
+            continue;
+        }
+        count += 1;
+    }
+    if count == 0 {
+        return None;
+    }
+    for x in sum.iter_mut() {
+        *x /= count as f32;
+    }
+    normalize(&mut sum);
+    Some(sum)
+}
+
 /// Cosine similarity between two embedding vectors (range −1..1, higher = more similar).
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {

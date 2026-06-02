@@ -438,6 +438,34 @@ impl FeatureVec {
         max_vals.iter().map(|v| v.powi(2)).sum::<f64>().sqrt()
     }
 
+    /// Averages several feature vectors into one (for multi-reference body
+    /// matching — "build like the blend of these performers").
+    pub fn average(vecs: &[FeatureVec]) -> Option<FeatureVec> {
+        let first = vecs.first()?;
+        let dims = first.values.len();
+        let mut sum = vec![0.0_f64; dims];
+        let mut count = 0usize;
+        for v in vecs {
+            if v.values.len() != dims {
+                continue;
+            }
+            for (s, x) in sum.iter_mut().zip(v.values.iter()) {
+                *s += *x;
+            }
+            count += 1;
+        }
+        if count == 0 {
+            return None;
+        }
+        for s in sum.iter_mut() {
+            *s /= count as f64;
+        }
+        Some(FeatureVec {
+            name: "<blend>".to_string(),
+            values: sum,
+        })
+    }
+
     /// Convert distance to a 0–100% similarity
     pub fn similarity_pct(&self, other: &FeatureVec) -> f64 {
         let d = self.distance(other);
