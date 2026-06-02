@@ -57,10 +57,6 @@ impl Scraper {
         performer.source = Some("FreeOnes".to_string());
         performer.source_url = Some(url);
 
-        if let Some(name_elem) = document.select(&Selector::parse("h1").unwrap()).next() {
-            performer.name = name_elem.text().collect::<String>().trim().to_string();
-        }
-
         if let Some(age_elem) = document.select(&Selector::parse(".age").unwrap()).next() {
             let age_text = age_elem.text().collect::<String>();
             if let Ok(age) = age_text.trim().parse::<u32>() {
