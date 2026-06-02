@@ -53,6 +53,11 @@ fn extract_field(entry: &serde_json::Value, field: &str) -> Option<Vec<f32>> {
 
 /// Runs a Python embedding sidecar and parses its stdout into the per-URL JSON
 /// array (`[{<field>: [floats]} | {error: ...}, ...]`), in input order.
+///
+/// Retries once on failure: a single slow or failed image download can make the
+/// whole batch produce no parseable output, which callers would otherwise
+/// surface as a misleading "no face/pose detected". A clean retry almost always
+/// succeeds, so transient hiccups don't look like empty results.
 fn run_sidecar_raw(
     script_name: &str,
     extra_args: &[&str],
@@ -64,14 +69,34 @@ fn run_sidecar_raw(
     let script = find_script(script_name)?;
     let python = find_python()?;
 
-    log::info!(
-        "{}: {} image(s) in one batch",
-        script_name,
-        image_urls.len()
-    );
+    let mut last_err = None;
+    for attempt in 1..=2 {
+        log::info!(
+            "{}: {} image(s), attempt {}",
+            script_name,
+            image_urls.len(),
+            attempt
+        );
+        match run_sidecar_attempt(&python, &script, extra_args, image_urls) {
+            Ok(values) => return Ok(values),
+            Err(e) => {
+                log::warn!("{} attempt {} failed: {}", script_name, attempt, e);
+                last_err = Some(e);
+            }
+        }
+    }
+    Err(last_err.expect("the retry loop always runs at least once"))
+}
 
-    let output = Command::new(&python)
-        .arg(&script)
+/// A single invocation of an embedding sidecar.
+fn run_sidecar_attempt(
+    python: &str,
+    script: &std::path::Path,
+    extra_args: &[&str],
+    image_urls: &[String],
+) -> Result<Vec<serde_json::Value>> {
+    let output = Command::new(python)
+        .arg(script)
         .args(extra_args)
         .args(image_urls)
         .output()
@@ -80,15 +105,11 @@ fn run_sidecar_raw(
     let stdout = String::from_utf8_lossy(&output.stdout);
     if stdout.trim().is_empty() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!(
-            "{} produced no output.\nstderr: {}",
-            script_name,
-            stderr.trim()
-        );
+        anyhow::bail!("produced no output. stderr: {}", stderr.trim());
     }
 
     serde_json::from_str(stdout.trim())
-        .with_context(|| format!("Could not parse {} output: {}", script_name, stdout))
+        .with_context(|| format!("could not parse sidecar output: {}", stdout))
 }
 
 /// Runs a sidecar and extracts a single named float-array field per URL.
