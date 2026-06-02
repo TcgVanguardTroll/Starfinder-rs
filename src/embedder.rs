@@ -7,13 +7,25 @@ use std::process::Command;
 /// than calling `generate_embedding` per image. Returns one slot per input URL,
 /// in order: `Some(vec)` on success, `None` if no face was detected/decoded.
 pub fn generate_embeddings(image_urls: &[String]) -> Result<Vec<Option<Vec<f32>>>> {
+    run_sidecar("face_embed.py", "embedding", image_urls)
+}
+
+/// Generates body-shape (pose) vectors for many image URLs via body_embed.py,
+/// in one batched call. `Some(vec)` per URL where a pose was detected, else None.
+pub fn generate_body_embeddings(image_urls: &[String]) -> Result<Vec<Option<Vec<f32>>>> {
+    run_sidecar("body_embed.py", "body", image_urls)
+}
+
+/// Runs a Python embedding sidecar that takes image URLs and returns a JSON
+/// array of `{<field>: [floats]}` or `{error: ...}`, one per URL, in order.
+fn run_sidecar(script_name: &str, field: &str, image_urls: &[String]) -> Result<Vec<Option<Vec<f32>>>> {
     if image_urls.is_empty() {
         return Ok(Vec::new());
     }
-    let script = find_script()?;
+    let script = find_script(script_name)?;
     let python = find_python()?;
 
-    log::info!("Embedding {} image(s) in one batch", image_urls.len());
+    log::info!("{}: {} image(s) in one batch", script_name, image_urls.len());
 
     let output = Command::new(&python)
         .arg(&script)
@@ -24,19 +36,16 @@ pub fn generate_embeddings(image_urls: &[String]) -> Result<Vec<Option<Vec<f32>>
     let stdout = String::from_utf8_lossy(&output.stdout);
     if stdout.trim().is_empty() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!(
-            "face_embed.py produced no output.\nstderr: {}",
-            stderr.trim()
-        );
+        anyhow::bail!("{} produced no output.\nstderr: {}", script_name, stderr.trim());
     }
 
     let arr: Vec<serde_json::Value> = serde_json::from_str(stdout.trim())
-        .with_context(|| format!("Could not parse face_embed.py output: {}", stdout))?;
+        .with_context(|| format!("Could not parse {} output: {}", script_name, stdout))?;
 
     Ok(arr
         .into_iter()
         .map(|entry| {
-            entry.get("embedding").and_then(|e| e.as_array()).map(|a| {
+            entry.get(field).and_then(|e| e.as_array()).map(|a| {
                 a.iter()
                     .filter_map(|v| v.as_f64().map(|f| f as f32))
                     .collect::<Vec<f32>>()
@@ -44,6 +53,48 @@ pub fn generate_embeddings(image_urls: &[String]) -> Result<Vec<Option<Vec<f32>>
         })
         .map(|opt| opt.filter(|v| !v.is_empty()))
         .collect())
+}
+
+/// Averages body-proportion vectors (plain mean — these are ratios, not unit
+/// embeddings). Stabilises the pose-dependent noise of single 2D images.
+pub fn body_centroid(vecs: &[Vec<f32>]) -> Option<Vec<f32>> {
+    let first = vecs.first()?;
+    let dims = first.len();
+    let mut sum = vec![0.0_f32; dims];
+    let mut count = 0usize;
+    for v in vecs {
+        if v.len() != dims {
+            continue;
+        }
+        for (s, x) in sum.iter_mut().zip(v.iter()) {
+            *s += *x;
+        }
+        count += 1;
+    }
+    if count == 0 {
+        return None;
+    }
+    for s in sum.iter_mut() {
+        *s /= count as f32;
+    }
+    Some(sum)
+}
+
+/// Body-proportion similarity as a 0–100%. Per-dimension weighted Euclidean
+/// distance mapped to a percentage (closer frame ⇒ higher).
+pub fn body_similarity_pct(a: &[f32], b: &[f32]) -> f64 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let d: f32 = a
+        .iter()
+        .zip(b.iter())
+        .map(|(x, y)| (x - y).powi(2))
+        .sum::<f32>()
+        .sqrt();
+    // Empirically, distances run ~0 (identical) to ~1.2 (very different builds).
+    let sim = 1.0 - (d as f64 / 1.2).clamp(0.0, 1.0);
+    (sim * 100.0).round()
 }
 
 /// Generates a single embedding (convenience wrapper over the batch API).
@@ -191,23 +242,22 @@ fn find_python() -> Result<String> {
     )
 }
 
-fn find_script() -> Result<PathBuf> {
+fn find_script(name: &str) -> Result<PathBuf> {
     let candidates: Vec<PathBuf> = [
         std::env::current_exe()
             .ok()
-            .and_then(|p| p.parent().map(|d| d.join("face_embed.py"))),
-        std::env::current_dir()
-            .ok()
-            .map(|d| d.join("face_embed.py")),
-        Some(PathBuf::from("face_embed.py")),
+            .and_then(|p| p.parent().map(|d| d.join(name))),
+        std::env::current_dir().ok().map(|d| d.join(name)),
+        Some(PathBuf::from(name)),
     ]
     .into_iter()
     .flatten()
     .collect();
 
-    candidates.into_iter().find(|p| p.exists()).ok_or_else(|| {
-        anyhow::anyhow!("face_embed.py not found. Place it alongside the luminary binary.")
-    })
+    candidates
+        .into_iter()
+        .find(|p| p.exists())
+        .ok_or_else(|| anyhow::anyhow!("{} not found. Place it alongside the luminary binary.", name))
 }
 
 #[cfg(test)]

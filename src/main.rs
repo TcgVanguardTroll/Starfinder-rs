@@ -230,6 +230,16 @@ enum Commands {
         #[arg(long, default_value_t = 40)]
         limit: usize,
     },
+    /// Find performers with a similar body frame (MediaPipe pose, via StashDB)
+    BodySearch {
+        /// A performer in your library to match build against
+        name: String,
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+        /// Render a thumbnail image inline for each result
+        #[arg(long, default_value_t = false)]
+        images: bool,
+    },
     /// Search for performers who look like someone (by face)
     FaceSearch {
         /// A performer in your library to match faces against
@@ -355,6 +365,13 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Warm { limit } => {
             warm(&db, limit).await?;
+        }
+        Commands::BodySearch {
+            name,
+            limit,
+            images,
+        } => {
+            body_search(&db, &name, limit, images).await?;
         }
         Commands::FaceSearch {
             name,
@@ -1699,6 +1716,133 @@ async fn warm(db: &Database, limit: usize) -> anyhow::Result<()> {
 }
 
 /// Search the local face corpus for performers who look like a reference.
+/// Find performers with a similar body frame, using MediaPipe pose vectors
+/// over StashDB's full-body images (TPDB face crops have no body to detect).
+async fn body_search(db: &Database, name: &str, limit: usize, images: bool) -> anyhow::Result<()> {
+    let cfg = config::Config::load();
+    let reference = db
+        .get_performer(name)?
+        .ok_or_else(|| anyhow::anyhow!("'{}' not found in your library. Add them first.", name))?;
+    let key = cfg
+        .stashdb_key
+        .clone()
+        .filter(|k| !k.is_empty())
+        .context("body-search needs full-body images from StashDB. Set 'luminary config stashdb-key <key>'.")?;
+    let stash = StashdbClient::new(key);
+
+    // Reference body vector: centroid over the reference's StashDB images.
+    println!(
+        "{}",
+        format!("Building body frame for {} from StashDB images...", reference.name).bright_cyan()
+    );
+    let ref_imgs = stash.image_urls(&reference.name, 4).await;
+    let ref_vecs: Vec<Vec<f32>> = embedder::generate_body_embeddings(&ref_imgs)
+        .unwrap_or_default()
+        .into_iter()
+        .flatten()
+        .collect();
+    let ref_body = embedder::body_centroid(&ref_vecs).context(
+        "No pose detected in the reference's images — need a full-body photo.",
+    )?;
+    println!(
+        "{}",
+        format!("  frame from {}/{} images", ref_vecs.len(), ref_imgs.len()).bright_black()
+    );
+
+    // Candidate pool from StashDB (same gender), each with their image array.
+    let pool = stash
+        .query_similar(cfg.gender_filter.tpdb_value(), None, None, 40)
+        .await?;
+    let known: std::collections::HashSet<String> = db
+        .get_all_performers()?
+        .iter()
+        .map(|p| p.name.to_lowercase())
+        .collect();
+    let pool: Vec<models::Performer> = pool
+        .into_iter()
+        .filter(|p| {
+            p.name.to_lowercase() != reference.name.to_lowercase()
+                && !known.contains(&p.name.to_lowercase())
+                && !p.gallery_urls.is_empty()
+        })
+        .collect();
+
+    println!(
+        "{}",
+        format!("Pose-embedding {} candidates...", pool.len()).bright_cyan()
+    );
+
+    // Flatten all candidate images into one batched pose call, tracking ranges.
+    let mut flat: Vec<String> = Vec::new();
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    for p in &pool {
+        let imgs: Vec<String> = p.gallery_urls.iter().take(3).cloned().collect();
+        let start = flat.len();
+        flat.extend(imgs);
+        ranges.push((start, flat.len()));
+    }
+    let all = embedder::generate_body_embeddings(&flat).unwrap_or_default();
+
+    let mut scored: Vec<(f64, models::Performer)> = pool
+        .into_iter()
+        .zip(ranges)
+        .filter_map(|(p, (s, e))| {
+            let vecs: Vec<Vec<f32>> = all.get(s..e)?.iter().flatten().cloned().collect();
+            let cv = embedder::body_centroid(&vecs)?;
+            Some((embedder::body_similarity_pct(&ref_body, &cv), p))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(limit);
+
+    if scored.is_empty() {
+        println!("{}", "No candidates with a detectable body pose found.".yellow());
+        return Ok(());
+    }
+
+    println!();
+    println!(
+        "{}",
+        format!("Top {} by body frame similarity to {}:", scored.len(), reference.name)
+            .bright_cyan()
+            .bold()
+    );
+    println!();
+    let img_cache = if images { ImageCache::new().ok() } else { None };
+    for (i, (pct, p)) in scored.iter().enumerate() {
+        let ht = recommender::performer_height_cm(p)
+            .map(|h| format!(", {:.0}cm", h))
+            .unwrap_or_default();
+        println!(
+            "{}. {} {}  {}",
+            (i + 1).to_string().bright_black(),
+            p.name.bright_white().bold(),
+            format!(
+                "({}{}{})",
+                p.ethnicity.as_deref().unwrap_or("?"),
+                p.measurements
+                    .as_ref()
+                    .map(|m| format!(", {}", m))
+                    .unwrap_or_default(),
+                ht,
+            )
+            .bright_black(),
+            format!("frame {:.0}%", pct).bright_cyan(),
+        );
+        if let Some(url) = &p.source_url {
+            println!("   {} {}", "↳".bright_black(), url.blue().underline());
+        }
+        if let Some(cache) = &img_cache {
+            if let Some(url) = p.profile_image_url.as_deref() {
+                render_thumbnail(cache, url).await;
+            }
+        }
+    }
+    println!();
+    println!("{}", "Use 'luminary add <name>' to add any to your profile.".bright_black());
+    Ok(())
+}
+
 async fn face_search(
     db: &Database,
     name: &str,
