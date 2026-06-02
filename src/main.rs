@@ -92,6 +92,9 @@ enum Commands {
     Recommend {
         #[arg(long, default_value_t = 10)]
         limit: usize,
+        /// Render a thumbnail image inline for each result
+        #[arg(long, default_value_t = false)]
+        images: bool,
     },
     /// Search by mixing attributes from stored performers or manual values
     Find {
@@ -146,6 +149,9 @@ enum Commands {
         name: String,
         #[arg(long, default_value_t = 10)]
         limit: usize,
+        /// Render a thumbnail image inline for each result
+        #[arg(long, default_value_t = false)]
+        images: bool,
     },
     /// Manage name aliases (e.g. "Goldie McHawn" → "Goldie Blair")
     Alias {
@@ -216,14 +222,14 @@ async fn main() -> anyhow::Result<()> {
         Commands::Profile => {
             show_profile(&db)?;
         }
-        Commands::Recommend { limit } => {
-            recommend(&db, limit).await?;
+        Commands::Recommend { limit, images } => {
+            recommend(&db, limit, images).await?;
         }
         Commands::Find { looks_like, body_like, hair, eye, ethnicity, cup, hips, waist, whr, tattoo, face_only, images, age_min, age_max, limit } => {
             find(&db, looks_like, body_like, hair, eye, ethnicity, cup, hips, waist, whr, tattoo, face_only, images, age_min, age_max, limit).await?;
         }
-        Commands::Similar { name, limit } => {
-            similar(&db, &name, limit).await?;
+        Commands::Similar { name, limit, images } => {
+            similar(&db, &name, limit, images).await?;
         }
         Commands::Alias { alias, canonical, remove } => {
             manage_alias(&db, alias, canonical, remove)?;
@@ -521,7 +527,7 @@ fn show_profile(db: &Database) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn recommend(db: &Database, limit: usize) -> anyhow::Result<()> {
+async fn recommend(db: &Database, limit: usize, images: bool) -> anyhow::Result<()> {
     let performers = db.get_all_performers()?;
 
     if performers.is_empty() {
@@ -599,6 +605,8 @@ async fn recommend(db: &Database, limit: usize) -> anyhow::Result<()> {
     println!("{}", format!("Top {} Recommendations for you:", scored.len()).bright_cyan().bold());
     println!();
 
+    let img_cache = if images { ImageCache::new().ok() } else { None };
+
     for (i, (score, p)) in scored.iter().enumerate() {
         let age_str = p.age
             .map(|a| format!(", {}", recommender::age_bucket(a)))
@@ -614,6 +622,14 @@ async fn recommend(db: &Database, limit: usize) -> anyhow::Result<()> {
             ).bright_black(),
             format!("match {:.0}%", score / 10.0 * 100.0).bright_cyan()
         );
+        if let Some(url) = &p.source_url {
+            println!("   {} {}", "↳".bright_black(), url.blue().underline());
+        }
+        if let Some(cache) = &img_cache {
+            if let Some(url) = p.face_url.as_deref().or(p.profile_image_url.as_deref()) {
+                render_thumbnail(cache, url).await;
+            }
+        }
     }
 
     println!();
@@ -851,7 +867,7 @@ async fn find(
     Ok(())
 }
 
-async fn similar(db: &Database, name: &str, limit: usize) -> anyhow::Result<()> {
+async fn similar(db: &Database, name: &str, limit: usize, images: bool) -> anyhow::Result<()> {
     let performer = db.get_performer(name)?
         .ok_or_else(|| anyhow::anyhow!("'{}' not found in your database. Add them first with 'luminary add'.", name))?;
 
@@ -922,6 +938,8 @@ async fn similar(db: &Database, name: &str, limit: usize) -> anyhow::Result<()> 
     ).bright_cyan().bold());
     println!();
 
+    let img_cache = if images { ImageCache::new().ok() } else { None };
+
     for (i, (score, face_sim, p)) in scored.iter().enumerate() {
         let age_str = p.age.map(|a| format!(", {}", recommender::age_bucket(a))).unwrap_or_default();
         let face_str = face_sim
@@ -939,6 +957,14 @@ async fn similar(db: &Database, name: &str, limit: usize) -> anyhow::Result<()> 
             format!("match {:.0}%", score).bright_cyan(),
             face_str.bright_black(),
         );
+        if let Some(url) = &p.source_url {
+            println!("   {} {}", "↳".bright_black(), url.blue().underline());
+        }
+        if let Some(cache) = &img_cache {
+            if let Some(url) = p.face_url.as_deref().or(p.profile_image_url.as_deref()) {
+                render_thumbnail(cache, url).await;
+            }
+        }
     }
 
     println!();
