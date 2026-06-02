@@ -18,7 +18,7 @@ pub(crate) use colored::*;
 pub(crate) use luminary::config;
 pub(crate) use luminary::database::Database;
 pub(crate) use luminary::embedder;
-pub(crate) use luminary::image_cache::ImageCache;
+pub(crate) use luminary::image_cache::{self, ImageCache};
 pub(crate) use luminary::models::{self, SearchFilters};
 pub(crate) use luminary::pornpics::PornpicsClient;
 pub(crate) use luminary::recommender;
@@ -26,4 +26,8 @@ pub(crate) use luminary::scraper::Scraper;
 pub(crate) use luminary::stashdb::StashdbClient;
 pub(crate) use luminary::tpdb::TpdbClient;
 
+pub mod library;
+pub mod mlindex;
+pub mod profile;
 pub mod search;
+pub mod settings;
