@@ -19,8 +19,7 @@ All data — performer profiles, face embeddings, preferences — stays on your 
 - **Smart recommendations** — IDF-weighted scoring that emphasises what's *distinctive* about your taste, not just what's common; body type is a hard gate
 - **Taste clusters** — k-means over your library finds your *multiple* types; `recommend --by-cluster` surfaces matches for each
 - **Face similarity** — ArcFace embeddings via InsightFace + ONNX Runtime; `find --looks-like` / `face-search` sort by actual facial geometry
-- **Body-frame similarity** — MediaPipe pose vectors (shoulder/hip/leg proportions) over full-body images; `body-search` finds a similar build/silhouette
-- **Body-shape (volume) similarity** — `body-search --shape` reads the body *outline* (waist/hip/thigh fullness) via segmentation — the soft-tissue volume that pose and measurements both miss
+- **Body similarity, three lenses** — `body-search --by build|volume|measurements`: skeletal proportions (MediaPipe pose), butt/thigh *fullness* (MediaPipe segmentation), or recorded WHR/hips/cup — all ranked against the cached index
 - **Build similarity** — waist-to-hip ratio (WHR) + k-NN feature vectors; `find --body-like` matches physique, not just cup size
 - **Mix-and-match search** — `find --looks-like "A" --body-like "B"` combines one performer's face with another's build
 - **Multi-source images, quality-gated** — gathers from ThePornDB (profile + scene stills) + StashDB + pornpics, then rejects headshots/crops/non-standing frames so a bad image can't skew a result
@@ -199,17 +198,18 @@ luminary face-search "Naughty Alysha" [--limit 10] [--images]
 ```powershell
 pip install mediapipe   # one-time
 
-# Similar build/silhouette (skeletal proportions: shoulder/hip/leg)
-luminary body-search "Christina Sapphire" [--limit 10]
-
-# Similar butt/thigh *volume* (soft-tissue fullness from the body outline)
-luminary body-search "Christina Sapphire" --shape
+luminary body-search "Christina Sapphire" [--by build|volume|measurements] [--limit 10]
 ```
 
-`body-search` builds the reference's body vector from a combined, **quality-gated** image pool (pornpics + ThePornDB scene stills + StashDB). The gate rejects headshots, cropped frames, and non-standing poses so a bad image can't fabricate a build. Two modes:
+`body-search` ranks against the cached index. Pick the **lens** with `--by`:
 
-- **default (frame)** — MediaPipe pose landmarks → shoulder/hip/torso/leg proportions. *Skeletal* shape.
-- **`--shape` (volume)** — MediaPipe segmentation → waist/hip/thigh silhouette widths. Captures glute & thigh *fullness* that the skeleton and measurements can't see.
+| `--by` | Signal | Source |
+|--------|--------|--------|
+| `build` *(default)* | skeletal proportions (shoulder/hip/leg) | MediaPipe **pose** |
+| `volume` | butt/thigh **fullness** the skeleton can't see | MediaPipe **segmentation** |
+| `measurements` | recorded WHR/hips/cup — **no images**, works for niche refs | the index's stored measurements |
+
+The two visual lenses (`build`, `volume`) build the reference's vector from a combined, **quality-gated** image pool (pornpics + ThePornDB scene stills + StashDB) — the gate rejects headshots, crops, and non-standing poses so a bad image can't fabricate a build. `measurements` needs no reference images at all.
 
 ### Building the index
 

@@ -271,23 +271,21 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
-    /// Find performers with a similar body frame (MediaPipe pose, via StashDB)
+    /// Find performers with a similar body, ranked against the cached index
     BodySearch {
-        /// A performer in your library to match build against
+        /// A performer in your library to match against
         name: String,
         #[arg(long, default_value_t = 10)]
         limit: usize,
         /// Render a thumbnail image inline for each result
         #[arg(long, default_value_t = false)]
         images: bool,
-        /// Match by silhouette *volume* (waist/hip/thigh fullness) instead of
-        /// skeletal frame — captures butt & thigh shape the pose vector misses.
-        #[arg(long, default_value_t = false)]
-        shape: bool,
-        /// Match by recorded measurements (WHR/hips/cup) against the index — no
-        /// reference images needed, so it works for niche performers too.
-        #[arg(long, default_value_t = false)]
-        measure: bool,
+        /// Which lens to match by:
+        ///   build        = skeletal proportions (shoulder/hip/leg), from pose
+        ///   volume       = silhouette fullness (butt/thigh), from segmentation
+        ///   measurements = recorded WHR/hips/cup (no images; works for niche refs)
+        #[arg(long = "by", default_value = "build", value_parser = ["build", "volume", "measurements"])]
+        by: String,
     },
     /// Search for performers who look like someone (by face)
     FaceSearch {
@@ -433,10 +431,9 @@ async fn main() -> anyhow::Result<()> {
             name,
             limit,
             images,
-            shape,
-            measure,
+            by,
         } => {
-            body_search(&db, &name, limit, images, shape, measure).await?;
+            body_search(&db, &name, limit, images, &by).await?;
         }
         Commands::FaceSearch {
             name,

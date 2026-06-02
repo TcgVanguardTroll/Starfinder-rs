@@ -1,5 +1,5 @@
 //! Image-based search handlers: `find` (attributes + face), `body-search`
-//! (pose frame / `--shape` volume), and `face-search`.
+//! (`--by build`/`volume`/`measurements`), and `face-search`.
 use super::*;
 pub(crate) async fn find(
     db: &Database,
@@ -451,33 +451,35 @@ pub(crate) async fn find(
     Ok(())
 }
 
-/// Find performers with a similar build from full-body images, over a combined
-/// (pornpics + TPDB scenes + StashDB) pool, gated to clean standing frames.
+/// Find performers with a similar body, ranked against the cached index.
 ///
-/// Two modes: the default *frame* uses the skeletal pose vector (shoulder/hip/
-/// leg proportions); `shape` uses the silhouette *volume* vector (waist/hip/
-/// thigh fullness from the body outline) — for butt & thigh shape the skeleton
-/// can't see.
+/// `by` selects the lens:
+///   - `build` (default): skeletal pose vector (shoulder/hip/leg proportions).
+///   - `volume`: silhouette/segmentation vector (waist/hip/thigh fullness — the
+///     butt & thigh shape the skeleton can't see). Built from a combined,
+///     gated pool (pornpics + TPDB scenes + StashDB).
+///   - `measurements`: recorded WHR/hips/cup (handled by `search_by_measure`).
 pub(crate) async fn body_search(
     db: &Database,
     name: &str,
     limit: usize,
     images: bool,
-    shape: bool,
-    measure: bool,
+    by: &str,
 ) -> anyhow::Result<()> {
     let cfg = config::Config::load();
     let reference = db
         .get_performer(name)?
         .ok_or_else(|| anyhow::anyhow!("'{}' not found in your library. Add them first.", name))?;
-    // Measurement lens: rank the cached index by recorded build (WHR/hips/cup/…).
+    // Measurements lens: rank the cached index by recorded build (WHR/hips/cup/…).
     // Needs no reference *images*, so it works even for niche performers who have
     // no clean full-body photo (where the visual lenses can't build a vector).
-    if measure {
+    if by == "measurements" {
         return search_by_measure(db, &reference, limit, images).await;
     }
-    // Noun used throughout the output for whichever signal we're matching on.
-    let kind = if shape { "shape" } else { "frame" };
+    // `volume` = silhouette/segmentation lens; otherwise the default `build`
+    // (skeletal pose) lens. Noun reused throughout the output.
+    let volume = by == "volume";
+    let kind = if volume { "volume" } else { "build" };
     let key = cfg.stashdb_key.clone().filter(|k| !k.is_empty()).context(
         "body-search needs full-body images from StashDB. Set 'luminary config stashdb-key <key>'.",
     )?;
@@ -516,7 +518,7 @@ pub(crate) async fn body_search(
         }
     }
     let embed = |urls: &[String]| {
-        if shape {
+        if volume {
             embedder::generate_seg_embeddings(urls)
         } else {
             embedder::generate_body_embeddings(urls)
@@ -565,8 +567,8 @@ pub(crate) async fn body_search(
                 n != ref_lc && !known.contains(&n)
             })
             .filter_map(|e| {
-                let cv = if shape { e.seg } else { e.pose }?;
-                let pct = if shape {
+                let cv = if volume { e.seg } else { e.pose }?;
+                let pct = if volume {
                     embedder::seg_similarity_pct(&ref_body, &cv)
                 } else {
                     embedder::body_similarity_pct(&ref_body, &cv)
@@ -608,7 +610,7 @@ pub(crate) async fn body_search(
             .filter_map(|(p, (s, e))| {
                 let vecs: Vec<Vec<f32>> = all.get(s..e)?.iter().flatten().cloned().collect();
                 let cv = embedder::body_centroid(&vecs)?;
-                let pct = if shape {
+                let pct = if volume {
                     embedder::seg_similarity_pct(&ref_body, &cv)
                 } else {
                     embedder::body_similarity_pct(&ref_body, &cv)
