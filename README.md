@@ -14,10 +14,10 @@ All data — performer profiles, face embeddings, preferences — stays on your 
 ## Features
 
 - **Preference tree** — builds a `body_type → ethnicity → hair → age → eye colour` tree from performers you like, showing percentages at every branch
-- **Smart recommendations** — uses ThePornDB's similarity engine seeded with your liked performers, then scores results against your tree (body type is a hard gate)
+- **Smart recommendations** — IDF-weighted scoring that emphasises what's *distinctive* about your taste, not just what's common; body type is a hard gate
 - **Face similarity** — ArcFace embeddings via InsightFace + ONNX Runtime; `find --looks-like` sorts by actual facial geometry
-- **Mix-and-match search** — `find --looks-like "A" --body-like "B"` combines face attributes from one performer with body measurements from another
-- **Body-shape search** — waist and hip measurements queried server-side; tolerance filtering client-side
+- **Build similarity** — waist-to-hip ratio (WHR) + k-NN feature vectors find performers with a genuinely similar physique, not just the same cup size
+- **Mix-and-match search** — `find --looks-like "A" --body-like "B"` combines one performer's face with another's build
 - **Configurable gender filter** — defaults to biological female; supports trans, male, any
 - **Fully offline after first fetch** — all data cached in SQLite locally
 
@@ -128,9 +128,13 @@ luminary similar "Seka Black"
 Mix attributes from stored performers or set them manually:
 
 ```powershell
-# Face attributes from one, body measurements from another
+# Face attributes from one, body/build from another
 luminary find --looks-like "Naughty Alysha" --body-like "Dee Siren"
 luminary find --looks-like "Naughty Alysha" --body-like "Lisa Ann"
+
+# Find by butt/build shape — waist-to-hip ratio
+luminary find --body-like "Dee Siren"      # auto-derives WHR 0.667
+luminary find --whr 0.667                   # set the ratio directly
 
 # Manual filters
 luminary find --ethnicity Caucasian --hair Blonde --cup DD --age-min 40
@@ -140,7 +144,7 @@ luminary find --looks-like "Naughty Alysha" --cup DD --age-min 46 --age-max 60
 ```
 
 **`--looks-like`** copies ethnicity, hair colour, and eye colour.  
-**`--body-like`** copies cup size, waist (±4"), and hip measurements (±4").
+**`--body-like`** copies cup size, hips, and waist-to-hip ratio (WHR).
 
 | Flag | Values | Notes |
 |------|--------|-------|
@@ -150,9 +154,17 @@ luminary find --looks-like "Naughty Alysha" --cup DD --age-min 46 --age-max 60
 | `--cup` | `A` `B` `C` `D` `DD` `DDD` | Letter only |
 | `--hips` | `36` | Inches, ±4 tolerance |
 | `--waist` | `24` | Inches, ±4 tolerance |
+| `--whr` | `0.667` | Waist-to-hip ratio, ±0.05 — captures butt/build shape |
 | `--age-min` | `40` | |
 | `--age-max` | `55` | |
 | `--limit` | `10` | Number of results |
+
+**Ranking:** results are sorted by face similarity when `--looks-like` is set (and embeddings exist), otherwise by **body/build similarity** (k-NN over a weighted feature vector) when `--body-like` is set. Each result shows a `face %` and/or `body %` along with its WHR.
+
+```
+1. Carina (Curvy, Caucasian, Blonde, 24w 36h whr 0.67)  body 99%
+2. Erin   (Curvy, Caucasian, Blonde, 25w 36h whr 0.69)  body 98%
+```
 
 ### Face similarity (ML)
 
@@ -191,17 +203,37 @@ body_type → ethnicity → hair_color → age_bucket → eye_color
 
 The **dominant path** (highest-count child at each level, confidence ≥ 50%) becomes your "type" and drives recommendation queries.
 
-### Recommendation scoring
+### Recommendation algorithms
 
-| Attribute | Weight | Hard gate? |
-|-----------|--------|:---:|
-| Body type | 5 | ✓ |
-| Ethnicity | 3 | — |
-| Age range | 2 | — |
-| Hair colour | 0.5 | — |
-| Eye colour | 0.3 | — |
+Luminary uses several complementary algorithms depending on the command:
 
-When face embeddings are available, cosine similarity re-ranks the results on top of this score.
+**1. IDF-weighted scoring (`recommend`)**
+
+Rather than fixed attribute weights, `recommend` weights each attribute by how *rare* it is among your liked performers — borrowed from TF-IDF in search engines:
+
+```
+idf(value) = ln(total_liked / liked_with_this_value) + 1
+```
+
+If every performer you like is 46+, that attribute is uninformative and gets down-weighted. If only a couple have Green eyes, that's a strong distinguishing signal and gets up-weighted. Body type remains a **hard exclusion gate** — wrong physique is removed entirely.
+
+**2. Waist-to-hip ratio, WHR (`find --whr`, `--body-like`)**
+
+Body shape is captured by the ratio `waist ÷ hips`, not just absolute size. A low WHR (~0.67) is the signature of a pronounced hourglass / bubble-butt build. Searching by WHR finds that shape regardless of overall frame size or cup size.
+
+**3. k-NN feature vectors (`find --body-like`)**
+
+Each performer is encoded as a normalised, weighted feature vector:
+
+```
+[ inv_whr ×3, hips ×2, cup ×1.5, age ×1, ethnicity ×0.5, hair ×0.3, eye ×0.2 ]
+```
+
+WHR and hips carry the most weight, so nearest-neighbour search by Euclidean distance surfaces performers with a genuinely similar build. The result `body %` is derived from this distance.
+
+**4. Face similarity (`find --looks-like`, `similar`)**
+
+512-dim ArcFace embeddings compared by cosine similarity (see below). Re-ranks results on top of the attribute scores when available.
 
 ### Face similarity
 
