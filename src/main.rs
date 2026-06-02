@@ -284,6 +284,10 @@ enum Commands {
         /// skeletal frame — captures butt & thigh shape the pose vector misses.
         #[arg(long, default_value_t = false)]
         shape: bool,
+        /// Match by recorded measurements (WHR/hips/cup) against the index — no
+        /// reference images needed, so it works for niche performers too.
+        #[arg(long, default_value_t = false)]
+        measure: bool,
     },
     /// Search for performers who look like someone (by face)
     FaceSearch {
@@ -430,8 +434,9 @@ async fn main() -> anyhow::Result<()> {
             limit,
             images,
             shape,
+            measure,
         } => {
-            body_search(&db, &name, limit, images, shape).await?;
+            body_search(&db, &name, limit, images, shape, measure).await?;
         }
         Commands::FaceSearch {
             name,

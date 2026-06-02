@@ -464,11 +464,18 @@ pub(crate) async fn body_search(
     limit: usize,
     images: bool,
     shape: bool,
+    measure: bool,
 ) -> anyhow::Result<()> {
     let cfg = config::Config::load();
     let reference = db
         .get_performer(name)?
         .ok_or_else(|| anyhow::anyhow!("'{}' not found in your library. Add them first.", name))?;
+    // Measurement lens: rank the cached index by recorded build (WHR/hips/cup/…).
+    // Needs no reference *images*, so it works even for niche performers who have
+    // no clean full-body photo (where the visual lenses can't build a vector).
+    if measure {
+        return search_by_measure(db, &reference, limit, images).await;
+    }
     // Noun used throughout the output for whichever signal we're matching on.
     let kind = if shape { "shape" } else { "frame" };
     let key = cfg.stashdb_key.clone().filter(|k| !k.is_empty()).context(
@@ -815,6 +822,111 @@ pub(crate) async fn face_search(
         }
         if let Some(cache) = &img_cache {
             if let Some(url) = p.face_url.as_deref().or(p.profile_image_url.as_deref()) {
+                render_thumbnail(cache, url).await;
+            }
+        }
+    }
+    println!();
+    println!(
+        "{}",
+        "Use 'luminary add <name>' to add any to your profile.".bright_black()
+    );
+    Ok(())
+}
+
+/// Rank the cached index by recorded build (WHR / hips / cup / height / …)
+/// similarity to the reference. Uses no reference images, so it works for niche
+/// performers with no clean full-body photo — and surfaces recognizable indexed
+/// performers rather than obscure TPDB-wide stubs.
+async fn search_by_measure(
+    db: &Database,
+    reference: &models::Performer,
+    limit: usize,
+    images: bool,
+) -> anyhow::Result<()> {
+    let ref_vec = recommender::feature_vector(reference)
+        .context("the reference has no usable measurements (need bust/waist/hips) to match on.")?;
+    let index = db.load_body_index()?;
+    if index.is_empty() {
+        anyhow::bail!("body index is empty — run 'luminary index' first.");
+    }
+    let known: std::collections::HashSet<String> = db
+        .get_all_performers()?
+        .iter()
+        .map(|p| p.name.to_lowercase())
+        .collect();
+    let ref_lc = reference.name.to_lowercase();
+
+    println!(
+        "{}",
+        format!(
+            "Ranking {} indexed performers by build/measurements to {}...",
+            index.len(),
+            reference.name
+        )
+        .bright_cyan()
+    );
+
+    let mut scored: Vec<(f64, models::Performer)> = index
+        .into_iter()
+        .filter(|e| {
+            let n = e.performer.name.to_lowercase();
+            n != ref_lc && !known.contains(&n)
+        })
+        .filter_map(|e| {
+            recommender::feature_vector(&e.performer)
+                .map(|cv| (ref_vec.similarity_pct(&cv), e.performer))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(limit);
+
+    if scored.is_empty() {
+        println!(
+            "{}",
+            "No indexed performers with measurements to compare.".yellow()
+        );
+        return Ok(());
+    }
+
+    println!();
+    println!(
+        "{}",
+        format!(
+            "Top {} by build/measurements to {}:",
+            scored.len(),
+            reference.name
+        )
+        .bright_cyan()
+        .bold()
+    );
+    println!();
+    let img_cache = if images { ImageCache::new().ok() } else { None };
+    for (i, (pct, p)) in scored.iter().enumerate() {
+        let ht = recommender::performer_height_cm(p)
+            .map(|h| format!(", {:.0}cm", h))
+            .unwrap_or_default();
+        println!(
+            "{}. {} {}  {}",
+            (i + 1).to_string().bright_black(),
+            p.name.bright_white().bold(),
+            format!(
+                "({}{}{})",
+                p.ethnicity.as_deref().unwrap_or("?"),
+                p.measurements
+                    .as_ref()
+                    .map(|m| format!(", {}", m))
+                    .unwrap_or_default(),
+                ht,
+            )
+            .bright_black(),
+            format!("build {:.0}%", pct).bright_cyan(),
+        );
+        if let Some(url) = &p.source_url {
+            println!("   {} {}", "↳".bright_black(), url.blue().underline());
+        }
+        if let Some(cache) = &img_cache {
+            if let Some(url) = p.profile_image_url.as_deref() {
                 render_thumbnail(cache, url).await;
             }
         }
