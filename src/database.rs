@@ -13,6 +13,14 @@ fn decode_embedding(val: rusqlite::types::Value) -> Option<Vec<f32>> {
     }
 }
 
+/// One cached entry in the body-vector index: a performer plus their (optional)
+/// pose/frame and seg/shape centroid vectors.
+pub struct BodyIndexEntry {
+    pub performer: Performer,
+    pub pose: Option<Vec<f32>>,
+    pub seg: Option<Vec<f32>>,
+}
+
 /// Database manager for storing performers
 pub struct Database {
     conn: Connection,
@@ -22,6 +30,9 @@ impl Database {
     /// Creates a new database connection
     pub fn new(path: &str) -> Result<Self> {
         let conn = Connection::open(path).context("Failed to open database")?;
+        // Wait rather than error if another process holds the write lock — keeps
+        // searches working while a long `index` build runs in the background.
+        conn.busy_timeout(std::time::Duration::from_secs(15))?;
         let db = Database { conn };
         db.init_schema()?;
         Ok(db)
@@ -50,6 +61,21 @@ impl Database {
                 name       TEXT PRIMARY KEY,
                 data       TEXT NOT NULL,
                 embedding  TEXT NOT NULL
+            )",
+            [],
+        )?;
+
+        // Cached body-vector index: precomputed pose (frame) and seg (shape/
+        // volume) centroids for a roster of performers, so body-search/find can
+        // rank against a rich candidate pool instantly instead of re-fetching and
+        // re-embedding images every run. Built by `luminary index`.
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS body_index (
+                name      TEXT PRIMARY KEY,
+                data      TEXT NOT NULL,
+                pose_vec  BLOB,
+                seg_vec   BLOB,
+                n_frames  INTEGER NOT NULL DEFAULT 0
             )",
             [],
         )?;
@@ -186,6 +212,70 @@ impl Database {
                 decode_embedding(val),
             ) {
                 out.push((e, p));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Upserts a performer's cached body vectors into the index. Either vector
+    /// may be None (no clean frame of that kind); the row is still written so a
+    /// resumed `index` run skips this performer rather than re-fetching them.
+    pub fn save_body_index(
+        &self,
+        p: &Performer,
+        pose: Option<&[f32]>,
+        seg: Option<&[f32]>,
+        n_frames: usize,
+    ) -> Result<()> {
+        let data = serde_json::to_string(p)?;
+        let pose_blob = pose.map(crate::embedder::embedding_to_blob);
+        let seg_blob = seg.map(crate::embedder::embedding_to_blob);
+        self.conn.execute(
+            "INSERT OR REPLACE INTO body_index (name, data, pose_vec, seg_vec, n_frames)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![p.name, data, pose_blob, seg_blob, n_frames as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Lowercased names already present in the body index (for resumable builds).
+    pub fn body_indexed_names(&self) -> Result<std::collections::HashSet<String>> {
+        let mut stmt = self.conn.prepare("SELECT name FROM body_index")?;
+        let names = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(names.into_iter().map(|n| n.to_lowercase()).collect())
+    }
+
+    /// Number of performers in the body index.
+    pub fn body_index_count(&self) -> Result<usize> {
+        Ok(self
+            .conn
+            .query_row("SELECT COUNT(*) FROM body_index", [], |r| r.get(0))?)
+    }
+
+    /// Loads the whole body index (performer + optional pose/seg vectors).
+    pub fn load_body_index(&self) -> Result<Vec<BodyIndexEntry>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT data, pose_vec, seg_vec FROM body_index")?;
+        let rows = stmt
+            .query_map([], |row| {
+                let data: String = row.get(0)?;
+                let pose: rusqlite::types::Value = row.get(1)?;
+                let seg: rusqlite::types::Value = row.get(2)?;
+                Ok((data, pose, seg))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for (data, pose, seg) in rows {
+            if let Ok(p) = serde_json::from_str::<Performer>(&data) {
+                out.push(BodyIndexEntry {
+                    performer: p,
+                    pose: decode_embedding(pose),
+                    seg: decode_embedding(seg),
+                });
             }
         }
         Ok(out)

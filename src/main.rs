@@ -250,6 +250,21 @@ enum Commands {
         #[arg(long, default_value_t = 40)]
         limit: usize,
     },
+    /// Build the cached body-vector index: for a roster of popular performers,
+    /// gather full-body images (pornpics + TPDB scenes + StashDB), gate them, and
+    /// store pose (frame) + seg (shape) centroids. Lets body-search/find rank
+    /// against a rich candidate pool instantly. One-time, resumable.
+    Index {
+        /// Roster size (how many popular performers to index)
+        #[arg(long, default_value_t = 500)]
+        limit: usize,
+        /// Images to gather per performer (caps cost; pornpics prioritised)
+        #[arg(long, default_value_t = 18)]
+        images: usize,
+        /// Re-index performers already present in the index
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
     /// Find performers with a similar body frame (MediaPipe pose, via StashDB)
     BodySearch {
         /// A performer in your library to match build against
@@ -396,6 +411,13 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Warm { limit } => {
             warm(&db, limit).await?;
+        }
+        Commands::Index {
+            limit,
+            images,
+            force,
+        } => {
+            build_index(&db, limit, images, force).await?;
         }
         Commands::BodySearch {
             name,
@@ -1866,6 +1888,154 @@ async fn warm(db: &Database, limit: usize) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Build (or extend) the cached body-vector index. For a roster of popular
+/// performers it gathers full-body images from every source, runs ONE dual
+/// embedding pass per chunk (pose + seg together), and stores gated centroids.
+/// Resumable: already-indexed performers are skipped unless `force`.
+async fn build_index(
+    db: &Database,
+    limit: usize,
+    images_per: usize,
+    force: bool,
+) -> anyhow::Result<()> {
+    let cfg = config::Config::load();
+    let stash_key = cfg.stashdb_key.clone().filter(|k| !k.is_empty()).context(
+        "index needs a StashDB key for the roster. Set 'luminary config stashdb-key <key>'.",
+    )?;
+    let stash = StashdbClient::new(stash_key);
+    let tpdb = cfg.resolve_api_key().ok().map(TpdbClient::new);
+    let pornpics = PornpicsClient::new();
+
+    // 1. Build the roster: paginate StashDB's most-popular performers.
+    println!(
+        "{}",
+        format!("Gathering a roster of {} popular performers...", limit)
+            .bright_cyan()
+            .bold()
+    );
+    let mut roster: Vec<models::Performer> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut page = 1usize;
+    while roster.len() < limit && page <= 60 {
+        let batch = stash
+            .query_popular(cfg.gender_filter.tpdb_value(), page, 25)
+            .await?;
+        if batch.is_empty() {
+            break;
+        }
+        for p in batch {
+            if seen.insert(p.name.to_lowercase()) {
+                roster.push(p);
+            }
+        }
+        page += 1;
+    }
+    roster.truncate(limit);
+
+    // 2. Skip performers already indexed (unless forced).
+    let done = if force {
+        std::collections::HashSet::new()
+    } else {
+        db.body_indexed_names()?
+    };
+    let todo: Vec<models::Performer> = roster
+        .into_iter()
+        .filter(|p| !done.contains(&p.name.to_lowercase()))
+        .collect();
+
+    if todo.is_empty() {
+        println!(
+            "{}",
+            "Nothing to do — roster already indexed (use --force to rebuild).".green()
+        );
+        return Ok(());
+    }
+    println!(
+        "{}",
+        format!(
+            "Indexing {} performers (pornpics + TPDB scenes + StashDB, gated)...",
+            todo.len()
+        )
+        .bright_cyan()
+    );
+    println!();
+
+    // 3. Process in chunks so one sidecar call (model loads once) covers many
+    //    performers, while keeping the per-call URL count under the OS arg limit.
+    let mut indexed = 0usize;
+    for group in todo.chunks(12) {
+        let mut flat: Vec<String> = Vec::new();
+        let mut ranges: Vec<(usize, usize)> = Vec::new();
+        for p in group {
+            let mut imgs: Vec<String> = Vec::new();
+            for u in pornpics.image_urls(&p.name, images_per).await {
+                if !imgs.contains(&u) {
+                    imgs.push(u);
+                }
+            }
+            if let Some(t) = &tpdb {
+                for u in t.scene_image_urls(&p.name, 8).await {
+                    if imgs.len() >= images_per {
+                        break;
+                    }
+                    if !imgs.contains(&u) {
+                        imgs.push(u);
+                    }
+                }
+            }
+            for u in p.gallery_urls.iter().take(4) {
+                if imgs.len() >= images_per {
+                    break;
+                }
+                if !imgs.contains(u) {
+                    imgs.push(u.clone());
+                }
+            }
+            let start = flat.len();
+            flat.extend(imgs);
+            ranges.push((start, flat.len()));
+        }
+
+        let all = embedder::generate_dual_embeddings(&flat).unwrap_or_default();
+
+        for (p, (s, e)) in group.iter().zip(ranges) {
+            let slice = all.get(s..e).unwrap_or(&[]);
+            let pose_vecs: Vec<Vec<f32>> =
+                slice.iter().filter_map(|(pose, _)| pose.clone()).collect();
+            let seg_vecs: Vec<Vec<f32>> = slice.iter().filter_map(|(_, seg)| seg.clone()).collect();
+            let n = pose_vecs.len().max(seg_vecs.len());
+            let pose_c = embedder::body_centroid(&pose_vecs);
+            let seg_c = embedder::body_centroid(&seg_vecs);
+            db.save_body_index(p, pose_c.as_deref(), seg_c.as_deref(), n)?;
+            indexed += 1;
+            println!(
+                "  {} {} {}",
+                format!("[{}/{}]", indexed, todo.len()).bright_black(),
+                p.name.bright_white(),
+                format!(
+                    "{} frame / {} shape frames",
+                    pose_vecs.len(),
+                    seg_vecs.len()
+                )
+                .bright_black(),
+            );
+        }
+    }
+
+    println!();
+    println!(
+        "{}",
+        format!(
+            "Index built: {} added, {} total in index.",
+            indexed,
+            db.body_index_count()?
+        )
+        .green()
+        .bold()
+    );
+    Ok(())
+}
+
 /// Find performers with a similar build from full-body images, over a combined
 /// (pornpics + TPDB scenes + StashDB) pool, gated to clean standing frames.
 ///
@@ -1951,54 +2121,80 @@ async fn body_search(
         .bright_black()
     );
 
-    // Candidate pool from StashDB (same gender), each with their image array.
-    let pool = stash
-        .query_similar(cfg.gender_filter.tpdb_value(), None, None, 40)
-        .await?;
     let known: std::collections::HashSet<String> = db
         .get_all_performers()?
         .iter()
         .map(|p| p.name.to_lowercase())
         .collect();
-    let pool: Vec<models::Performer> = pool
-        .into_iter()
-        .filter(|p| {
-            p.name.to_lowercase() != reference.name.to_lowercase()
-                && !known.contains(&p.name.to_lowercase())
-                && !p.gallery_urls.is_empty()
-        })
-        .collect();
+    let ref_lc = reference.name.to_lowercase();
 
-    println!(
-        "{}",
-        format!("Embedding {} candidates...", pool.len()).bright_cyan()
-    );
-
-    // Flatten all candidate images into one batched pose call, tracking ranges.
-    let mut flat: Vec<String> = Vec::new();
-    let mut ranges: Vec<(usize, usize)> = Vec::new();
-    for p in &pool {
-        let imgs: Vec<String> = p.gallery_urls.iter().take(3).cloned().collect();
-        let start = flat.len();
-        flat.extend(imgs);
-        ranges.push((start, flat.len()));
-    }
-    let all = embed(&flat).unwrap_or_default();
-
-    let mut scored: Vec<(f64, models::Performer)> = pool
-        .into_iter()
-        .zip(ranges)
-        .filter_map(|(p, (s, e))| {
-            let vecs: Vec<Vec<f32>> = all.get(s..e)?.iter().flatten().cloned().collect();
-            let cv = embedder::body_centroid(&vecs)?;
-            let pct = if shape {
-                embedder::seg_similarity_pct(&ref_body, &cv)
-            } else {
-                embedder::body_similarity_pct(&ref_body, &cv)
-            };
-            Some((pct, p))
-        })
-        .collect();
+    // Candidates: prefer the cached body index (instant, rich pool). Fall back to
+    // a live StashDB fetch + embed when the index hasn't been built yet.
+    let index = db.load_body_index()?;
+    let mut scored: Vec<(f64, models::Performer)> = if !index.is_empty() {
+        println!(
+            "{}",
+            format!("Ranking against {} indexed performers...", index.len()).bright_cyan()
+        );
+        index
+            .into_iter()
+            .filter(|e| {
+                let n = e.performer.name.to_lowercase();
+                n != ref_lc && !known.contains(&n)
+            })
+            .filter_map(|e| {
+                let cv = if shape { e.seg } else { e.pose }?;
+                let pct = if shape {
+                    embedder::seg_similarity_pct(&ref_body, &cv)
+                } else {
+                    embedder::body_similarity_pct(&ref_body, &cv)
+                };
+                Some((pct, e.performer))
+            })
+            .collect()
+    } else {
+        // Live fallback: fetch a StashDB pool and embed it now.
+        let pool: Vec<models::Performer> = stash
+            .query_similar(cfg.gender_filter.tpdb_value(), None, None, 40)
+            .await?
+            .into_iter()
+            .filter(|p| {
+                p.name.to_lowercase() != ref_lc
+                    && !known.contains(&p.name.to_lowercase())
+                    && !p.gallery_urls.is_empty()
+            })
+            .collect();
+        println!(
+            "{}",
+            format!(
+                "Embedding {} candidates (no index yet — run 'index')...",
+                pool.len()
+            )
+            .bright_cyan()
+        );
+        let mut flat: Vec<String> = Vec::new();
+        let mut ranges: Vec<(usize, usize)> = Vec::new();
+        for p in &pool {
+            let imgs: Vec<String> = p.gallery_urls.iter().take(3).cloned().collect();
+            let start = flat.len();
+            flat.extend(imgs);
+            ranges.push((start, flat.len()));
+        }
+        let all = embed(&flat).unwrap_or_default();
+        pool.into_iter()
+            .zip(ranges)
+            .filter_map(|(p, (s, e))| {
+                let vecs: Vec<Vec<f32>> = all.get(s..e)?.iter().flatten().cloned().collect();
+                let cv = embedder::body_centroid(&vecs)?;
+                let pct = if shape {
+                    embedder::seg_similarity_pct(&ref_body, &cv)
+                } else {
+                    embedder::body_similarity_pct(&ref_body, &cv)
+                };
+                Some((pct, p))
+            })
+            .collect()
+    };
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     scored.truncate(limit);
 

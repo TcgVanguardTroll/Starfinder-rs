@@ -24,14 +24,40 @@ pub fn generate_seg_embeddings(image_urls: &[String]) -> Result<Vec<Option<Vec<f
     run_sidecar("body_embed.py", "seg", &["--seg"], image_urls)
 }
 
-/// Runs a Python embedding sidecar that takes image URLs and returns a JSON
-/// array of `{<field>: [floats]}` or `{error: ...}`, one per URL, in order.
-fn run_sidecar(
+/// One image's dual result: `(pose/frame, seg/shape)`, each present only if that
+/// vector passed its gates.
+pub type DualVec = (Option<Vec<f32>>, Option<Vec<f32>>);
+
+/// Generates BOTH the pose/frame and seg/shape vectors in a single `--seg` pass
+/// (the seg sidecar computes landmarks anyway, so the pose vector is free).
+/// Returns `(pose, seg)` per URL — used by the index builder so one embedding
+/// pass populates both search modes. Halves the cost vs running them separately.
+pub fn generate_dual_embeddings(image_urls: &[String]) -> Result<Vec<DualVec>> {
+    let arr = run_sidecar_raw("body_embed.py", &["--seg"], image_urls)?;
+    Ok(arr
+        .into_iter()
+        .map(|entry| (extract_field(&entry, "body"), extract_field(&entry, "seg")))
+        .collect())
+}
+
+/// Pulls a `[floats]` field out of one sidecar JSON entry, or None if absent/empty.
+fn extract_field(entry: &serde_json::Value, field: &str) -> Option<Vec<f32>> {
+    let v: Vec<f32> = entry
+        .get(field)?
+        .as_array()?
+        .iter()
+        .filter_map(|v| v.as_f64().map(|f| f as f32))
+        .collect();
+    (!v.is_empty()).then_some(v)
+}
+
+/// Runs a Python embedding sidecar and parses its stdout into the per-URL JSON
+/// array (`[{<field>: [floats]} | {error: ...}, ...]`), in input order.
+fn run_sidecar_raw(
     script_name: &str,
-    field: &str,
     extra_args: &[&str],
     image_urls: &[String],
-) -> Result<Vec<Option<Vec<f32>>>> {
+) -> Result<Vec<serde_json::Value>> {
     if image_urls.is_empty() {
         return Ok(Vec::new());
     }
@@ -61,19 +87,21 @@ fn run_sidecar(
         );
     }
 
-    let arr: Vec<serde_json::Value> = serde_json::from_str(stdout.trim())
-        .with_context(|| format!("Could not parse {} output: {}", script_name, stdout))?;
+    serde_json::from_str(stdout.trim())
+        .with_context(|| format!("Could not parse {} output: {}", script_name, stdout))
+}
 
+/// Runs a sidecar and extracts a single named float-array field per URL.
+fn run_sidecar(
+    script_name: &str,
+    field: &str,
+    extra_args: &[&str],
+    image_urls: &[String],
+) -> Result<Vec<Option<Vec<f32>>>> {
+    let arr = run_sidecar_raw(script_name, extra_args, image_urls)?;
     Ok(arr
-        .into_iter()
-        .map(|entry| {
-            entry.get(field).and_then(|e| e.as_array()).map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_f64().map(|f| f as f32))
-                    .collect::<Vec<f32>>()
-            })
-        })
-        .map(|opt| opt.filter(|v| !v.is_empty()))
+        .iter()
+        .map(|entry| extract_field(entry, field))
         .collect())
 }
 

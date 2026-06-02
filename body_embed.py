@@ -255,16 +255,26 @@ def main():
                 continue
             lm = res.pose_landmarks[0]
             if seg_mode:
+                # Emit BOTH vectors: the pose/frame vector is free here (the
+                # landmarks are already computed), so one --seg pass feeds both
+                # frame and shape matching. Each may be None independently.
                 seg_res = segmenter.segment(image)
                 mask = (
                     seg_res.confidence_masks[0].numpy_view()
                     if seg_res.confidence_masks
                     else None
                 )
-                vec = build_seg_vector(lm, mask)
+                entry = {}
+                pose_vec = build_vector(lm)
+                if pose_vec:
+                    entry["body"] = pose_vec
+                seg_vec = build_seg_vector(lm, mask)
+                if seg_vec:
+                    entry["seg"] = seg_vec
+                results.append(entry if entry else {"error": reject})
             else:
                 vec = build_vector(lm)
-            results.append({field: vec} if vec else {"error": reject})
+                results.append({field: vec} if vec else {"error": reject})
         except Exception as e:
             results.append({"error": str(e)})
         finally:

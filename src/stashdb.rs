@@ -170,6 +170,39 @@ impl StashdbClient {
             fields.join(", ")
         );
 
+        self.run_performer_query(query).await
+    }
+
+    /// Fetches one page of the most-popular performers (for building the body
+    /// index roster). `page` is 1-based. Filtered to real, named performers.
+    pub async fn query_popular(
+        &self,
+        gender: Option<&str>,
+        page: usize,
+        per_page: usize,
+    ) -> Result<Vec<Performer>> {
+        let mut fields = vec![
+            format!("per_page: {}", per_page),
+            format!("page: {}", page.max(1)),
+            "sort: POPULARITY".to_string(),
+            "direction: DESC".to_string(),
+        ];
+        if let Some(g) = gender {
+            fields.push(format!("gender: {}", to_enum(g)));
+        }
+        let query = format!(
+            "query {{ queryPerformers(input: {{ {} }}) {{ performers {{ \
+                id name gender ethnicity hair_color eye_color \
+                cup_size band_size waist_size hip_size \
+                images {{ url width height }} }} }} }}",
+            fields.join(", ")
+        );
+        self.run_performer_query(query).await
+    }
+
+    /// Shared POST + parse for queryPerformers, dropping placeholder entries
+    /// (empty or purely-numeric names — scene-only stubs with no real identity).
+    async fn run_performer_query(&self, query: String) -> Result<Vec<Performer>> {
         let resp = self
             .client
             .post(STASHDB_GRAPHQL)
@@ -189,8 +222,6 @@ impl StashdbClient {
             .map(|d| d.query_performers.performers)
             .unwrap_or_default();
 
-        // Drop placeholder entries (empty or purely-numeric names) — they have
-        // no usable identity and are usually scene-only stubs.
         Ok(performers
             .into_iter()
             .map(|p| p.into_performer())
