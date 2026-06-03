@@ -167,13 +167,34 @@ def width_at(mask, y_norm, center_col):
     return float(right - left) / w
 
 
+def _min_visibility(lm, idxs):
+    """Lowest MediaPipe visibility across the given landmarks, treating a missing
+    score as not-visible. Returns 1.0 when visibility is unsupported (don't
+    over-reject), mirroring is_full_body's handling."""
+    vis = [getattr(lm[i], "visibility", None) for i in idxs]
+    known = [v for v in vis if v is not None]
+    if not known:
+        return 1.0
+    return min(0.0 if v is None else v for v in vis)
+
+
 def build_seg_vector(lm, mask):
     """Lower-body *volume* ratios from the body silhouette. Where build_vector
     reads the skeleton, this reads the outline width at waist / hip / thigh — so
     it captures glute and thigh fullness (the thing pose & measurements miss).
-    Scale-invariant: every width is divided by shoulder width. Same gating as
-    the pose vector (cropped / non-standing frames are rejected)."""
-    if mask is None or not is_full_body(lm) or not is_upright(lm):
+    Scale-invariant: every width is divided by shoulder width.
+
+    Works on a full-body standing frame (precise, knee-relative thigh sample) OR
+    a legs-cropped rear/glute shot — the kind framed from the thighs up, where the
+    legs run off the bottom — as long as the shoulders and hips are solid, falling
+    back to a torso-relative thigh sample. So a tight butt shot (which fails the
+    full-body gate) still yields a volume vector instead of nothing. Full-body
+    frames are computed exactly as before, so the cached index needs no rebuild.
+    Side/profile and non-upright frames are still rejected."""
+    if mask is None:
+        return None
+    # Shoulders + hips must be reliable; the legs are optional (cropped shots).
+    if _min_visibility(lm, (11, 12, 23, 24)) < MIN_VISIBILITY:
         return None
 
     mask = np.asarray(mask)
@@ -189,10 +210,22 @@ def build_seg_vector(lm, mask):
     # width and makes every silhouette-width ratio explode.
     if sw < 0.08:
         return None
+    torso = hip_y - sh_y
+    if torso < 1e-4:  # shoulders must sit above the hips (upright torso)
+        return None
     mid_col = int(((lm[23].x + lm[24].x) / 2) * w)  # body centerline (hip mid)
 
-    waist_y = sh_y + 0.65 * (hip_y - sh_y)     # just above the hips
-    thigh_y = hip_y + 0.35 * (knee_y - hip_y)  # upper thigh, where it's fullest
+    waist_y = sh_y + 0.65 * torso  # just above the hips
+    if _min_visibility(lm, (25, 26, 27, 28)) >= MIN_VISIBILITY:
+        # Legs in frame: keep the strict gate + precise knee-relative thigh
+        # sample, so full-body frames are scored exactly as before.
+        if not is_upright(lm):
+            return None
+        thigh_y = hip_y + 0.35 * (knee_y - hip_y)
+    else:
+        # Legs cropped (framed-from-the-thighs butt shot): knee_y is extrapolated
+        # junk, so anchor the thigh sample torso-relative instead.
+        thigh_y = hip_y + 0.40 * torso
 
     waist_w = width_at(mask, waist_y, mid_col)
     hip_w = width_at(mask, hip_y, mid_col)
@@ -265,13 +298,86 @@ def build_proj_vector(lm, mask):
     ]
 
 
+def debug_entry(url, lm, mask):
+    """Per-URL diagnostic for --debug: every gate decision and the raw values
+    behind it, so a rejected frame can be diagnosed (and the gates/measures
+    tuned) from numbers rather than the image. Reports the landmark
+    visibilities, the full-body / upright / profile gates, the silhouette
+    samples, and what each of the three vectors came out to (null = its gate
+    rejected the frame)."""
+    names = {
+        11: "L_shoulder", 12: "R_shoulder", 23: "L_hip", 24: "R_hip",
+        25: "L_knee", 26: "R_knee", 27: "L_ankle", 28: "R_ankle",
+    }
+    vis = {
+        f"{lbl}({i})": round(float(getattr(lm[i], "visibility", -1.0)), 3)
+        for i, lbl in names.items()
+    }
+    sw = abs(lm[11].x - lm[12].x)
+    sh_y = (lm[11].y + lm[12].y) / 2
+    hip_y = (lm[23].y + lm[24].y) / 2
+    knee_y = (lm[25].y + lm[26].y) / 2
+    ank_y = (lm[27].y + lm[28].y) / 2
+
+    m = None
+    if mask is not None:
+        m = np.asarray(mask)
+        if m.ndim == 3:
+            m = m[:, :, 0]
+
+    samples = {}
+    if m is not None:
+        _, w = m.shape
+        mid_col = int(((lm[23].x + lm[24].x) / 2) * w)
+        waist_y = sh_y + 0.65 * (hip_y - sh_y)
+        glute_y = hip_y + 0.15 * (knee_y - hip_y)
+        thigh_y = hip_y + 0.45 * (knee_y - hip_y)
+        samples = {
+            "waist": round(width_at(m, waist_y, mid_col), 4),
+            "hip": round(width_at(m, hip_y, mid_col), 4),
+            "glute": round(width_at(m, glute_y, mid_col), 4),
+            "thigh": round(width_at(m, thigh_y, mid_col), 4),
+        }
+
+    return {
+        "url": url.rsplit("/", 1)[-1],
+        "pose_detected": True,
+        "view": classify_view(lm),
+        "shoulder_width_norm": round(sw, 4),
+        "is_full_body": is_full_body(lm),
+        "is_upright": is_upright(lm),
+        "visibility": vis,
+        "y_norm": {
+            "shoulders": round(sh_y, 3),
+            "hips": round(hip_y, 3),
+            "knees": round(knee_y, 3),
+            "ankles": round(ank_y, 3),
+        },
+        "mask_shape": list(m.shape) if m is not None else None,
+        # In a frontal frame these central-run samples read as widths; in a
+        # profile they read as front-to-back depths.
+        "silhouette_central_run": samples,
+        "pose_vector": build_vector(lm),
+        "seg_vector": build_seg_vector(lm, mask),
+        "proj_vector": build_proj_vector(lm, mask),
+    }
+
+
 def main():
     args = sys.argv[1:]
     # `--seg` switches from the pose/skeleton vector to the silhouette/volume
     # vector (butt & thigh fullness). Default stays pose for back-compat.
     seg_mode = False
-    if args and args[0] == "--seg":
-        seg_mode = True
+    debug_mode = False
+    # Flags are positional-first: `--seg` (silhouette/volume mode) and `--debug`
+    # (per-URL diagnostic dump for tuning the gates/measures from numbers). Debug
+    # implies seg because it needs the silhouette mask.
+    while args and args[0] in ("--seg", "--debug"):
+        if args[0] == "--seg":
+            seg_mode = True
+        else:
+            debug_mode = True
+            seg_mode = True
         args = args[1:]
     urls = args
 
@@ -281,7 +387,7 @@ def main():
     )
 
     if not urls:
-        print(json.dumps([{"error": "Usage: body_embed.py [--seg] <url> [url ...]"}]))
+        print(json.dumps([{"error": "Usage: body_embed.py [--seg] [--debug] <url> [url ...]"}]))
         sys.exit(1)
 
     try:
@@ -318,6 +424,20 @@ def main():
             tmp = download(url)
             image = mp.Image.create_from_file(tmp)
             res = landmarker.detect(image)
+            if debug_mode:
+                if not res.pose_landmarks:
+                    results.append(
+                        {"url": url.rsplit("/", 1)[-1], "pose_detected": False}
+                    )
+                    continue
+                seg_res = segmenter.segment(image)
+                mask = (
+                    seg_res.confidence_masks[0].numpy_view()
+                    if seg_res.confidence_masks
+                    else None
+                )
+                results.append(debug_entry(url, res.pose_landmarks[0], mask))
+                continue
             if not res.pose_landmarks:
                 results.append({"error": "No pose detected"})
                 continue
@@ -352,7 +472,7 @@ def main():
             if tmp and os.path.exists(tmp):
                 os.unlink(tmp)
 
-    print(json.dumps(results))
+    print(json.dumps(results, indent=2) if debug_mode else json.dumps(results))
 
 
 if __name__ == "__main__":
