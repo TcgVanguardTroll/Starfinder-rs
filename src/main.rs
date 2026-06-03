@@ -315,7 +315,8 @@ enum Commands {
         ///   build        = skeletal proportions (shoulder/hip/leg), from pose
         ///   volume       = silhouette fullness (butt/thigh), from segmentation
         ///   measurements = recorded WHR/hips/cup (no images; works for niche refs)
-        #[arg(long = "by", default_value = "build", value_parser = ["build", "volume", "measurements"])]
+        ///   blend        = rank-normalised fusion of face + build + volume + projection + measurements
+        #[arg(long = "by", default_value = "build", value_parser = ["build", "volume", "measurements", "blend"])]
         by: String,
     },
     /// Search for performers who look like someone (by face)

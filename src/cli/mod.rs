@@ -15,6 +15,7 @@ pub(crate) use crate::{
 // Library crate surface used across the handlers.
 pub(crate) use anyhow::Context;
 pub(crate) use colored::*;
+pub(crate) use luminary::blend;
 pub(crate) use luminary::config;
 pub(crate) use luminary::database::Database;
 pub(crate) use luminary::embedder;

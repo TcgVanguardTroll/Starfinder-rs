@@ -10,6 +10,7 @@
 // search_by_attributes takes one arg per filter; that's clearer than a struct.
 #![allow(clippy::should_implement_trait, clippy::too_many_arguments)]
 
+pub mod blend;
 pub mod config;
 pub mod database;
 pub mod embedder;
