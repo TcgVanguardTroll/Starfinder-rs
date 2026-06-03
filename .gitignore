@@ -7,3 +7,5 @@
 __pycache__/
 *.pyc
 target-live/
+scripts/motion_dataset.json
+scripts/backfill_stats.json

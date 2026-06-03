@@ -90,7 +90,9 @@ def analyse(path, landmarker):
     cap.set(cv2.CAP_PROP_POS_FRAMES, start)
 
     # Series collected only over *continuous* frame pairs (cuts/teleports dropped).
-    bust_sig, glute_sig, skel_sig, torso_samples = [], [], [], []
+    # Store RAW normalised flows (no destructive subtraction) + the rigid
+    # reference, so downstream can form ratios without losing dynamic range.
+    bust_sig, glute_sig, rigid_sig, skel_sig, torso_samples = [], [], [], [], []
     prev_gray = None
     prev_pelvis = None
     scanned = 0
@@ -128,16 +130,22 @@ def analyse(path, landmarker):
                     flow = cv2.calcOpticalFlowFarneback(
                         prev_gray, gray, None, 0.5, 3, 15, 3, 5, 1.2, 0
                     )
-                    # Camera compensation: subtract whole-frame vertical flow (a
-                    # pan/shake moves everything) so we keep only ROI-local motion.
-                    global_v = float(np.mean(np.abs(flow[..., 1]))) / torso
-                    bust = (sh[0] - half, sh[1], sh[0] + half, sh[1] + 0.55 * torso)
+                    # Rigid reference: a thin band at the shoulder line moves with
+                    # the camera + body but carries little soft tissue, so ROI flow
+                    # ABOVE it is the jiggle. Better than whole-frame subtraction,
+                    # which over-counts background when the subject fills the frame.
+                    rigid_box = (sh[0] - half, sh[1] - 0.08 * torso,
+                                 sh[0] + half, sh[1] + 0.08 * torso)
+                    rigid = _roi_mean_vflow(flow, rigid_box, w, h)
+                    rigid = (rigid / torso) if rigid is not None else 0.0
+                    bust = (sh[0] - half, sh[1] + 0.10 * torso, sh[0] + half, sh[1] + 0.55 * torso)
                     glute = (hp[0] - half, hp[1] - 0.15 * torso, hp[0] + half, hp[1] + 0.45 * torso)
                     b = _roi_mean_vflow(flow, bust, w, h)
                     g = _roi_mean_vflow(flow, glute, w, h)
                     if b is not None and g is not None:
-                        bust_sig.append(max(0.0, b / torso - global_v))
-                        glute_sig.append(max(0.0, g / torso - global_v))
+                        bust_sig.append(b / torso)
+                        glute_sig.append(g / torso)
+                        rigid_sig.append(rigid)  # shoulder-band (rigid+camera) motion
                         skel_sig.append(skel_dy)
                         torso_samples.append(torso)
             prev_pelvis = pelvis
@@ -150,22 +158,36 @@ def analyse(path, landmarker):
                 "error": f"only {n} continuous frames (cuts/camera too heavy)"}
     bust_sig = np.asarray(bust_sig)
     glute_sig = np.asarray(glute_sig)
-    skel_amp = float(np.mean(skel_sig)) + 1e-6  # mean rigid vertical motion / frame
+    bust_m = float(np.mean(bust_sig))
+    glute_m = float(np.mean(glute_sig))
+    rigid_m = float(np.mean(rigid_sig)) + 1e-6  # shoulder-band rigid+camera motion
     return {
         "path": os.path.basename(path),
         "ok": True,
         "frames": n,
         "fps": round(eff_fps, 1),
         "torso_px": round(float(np.mean(torso_samples)), 1),
-        "bust_motion": round(float(np.mean(bust_sig)), 4),  # camera-comp tissue motion
+        "bust_flow": round(bust_m, 4),     # raw normalised ROI vertical flow
+        "glute_flow": round(glute_m, 4),
+        "rigid_flow": round(rigid_m, 4),   # the shoulder-band reference
         "bust_freq": round(_dominant_freq(bust_sig, eff_fps), 2),
-        "glute_motion": round(float(np.mean(glute_sig)), 4),
         "glute_freq": round(_dominant_freq(glute_sig, eff_fps), 2),
-        "skel_amp": round(skel_amp, 4),
-        # jiggle = local tissue motion relative to rigid-body motion (>~1 = soft).
-        "jiggle_bust": round(float(np.mean(bust_sig)) / skel_amp, 2),
-        "jiggle_glute": round(float(np.mean(glute_sig)) / skel_amp, 2),
+        "skel_amp": round(float(np.mean(skel_sig)), 4),
+        # jiggle = tissue motion / rigid-body motion (>1 = tissue oscillates more
+        # than the frame moves). Ratio keeps dynamic range (no destructive sub).
+        "jiggle_bust": round(bust_m / rigid_m, 2),
+        "jiggle_glute": round(glute_m / rigid_m, 2),
     }
+
+
+def make_landmarker():
+    """A single-pose PoseLandmarker (Tasks API, IMAGE mode). Reused per batch."""
+    opts = vision.PoseLandmarkerOptions(
+        base_options=mp_python.BaseOptions(model_asset_path=_cached(POSE_MODEL_URL)),
+        running_mode=vision.RunningMode.IMAGE,
+        num_poses=1,
+    )
+    return vision.PoseLandmarker.create_from_options(opts)
 
 
 def main():
@@ -173,12 +195,7 @@ def main():
     if not paths:
         print(json.dumps([{"error": "Usage: motion_embed.py <video> [video ...]"}]))
         sys.exit(1)
-    opts = vision.PoseLandmarkerOptions(
-        base_options=mp_python.BaseOptions(model_asset_path=_cached(POSE_MODEL_URL)),
-        running_mode=vision.RunningMode.IMAGE,
-        num_poses=1,
-    )
-    landmarker = vision.PoseLandmarker.create_from_options(opts)
+    landmarker = make_landmarker()
     out = []
     for path in paths:
         try:
