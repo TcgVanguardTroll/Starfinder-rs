@@ -18,11 +18,11 @@ pub(super) async fn search_blend(
     let ref_face = db.get_embedding(&reference.name).ok().flatten();
     let ref_meas = recommender::feature_vector(reference);
     let ref_imgs = db.load_images(&reference.name, None)?;
-    let (ref_pose, ref_seg, ref_proj) = if ref_imgs.is_empty() {
-        (None, None, None)
+    let (ref_pose, ref_seg, ref_proj, ref_bust) = if ref_imgs.is_empty() {
+        (None, None, None, None)
     } else {
-        let (p, s, pr, _) = luminary::database::aggregate_views(&ref_imgs);
-        (p, s, pr)
+        let (p, s, pr, bu, _) = luminary::database::aggregate_views(&ref_imgs);
+        (p, s, pr, bu)
     };
 
     let active = |label: &str, on: bool| {
@@ -43,17 +43,19 @@ pub(super) async fn search_blend(
             .bold()
     );
     println!(
-        "  {}  {}  {}  {}  {}",
+        "  {}  {}  {}  {}  {}  {}",
         active("face", ref_face.is_some()),
         active("frame", ref_pose.is_some()),
         active("curves", ref_seg.is_some()),
         active("proj", ref_proj.is_some()),
+        active("bust", ref_bust.is_some()),
         active("stats", ref_meas.is_some()),
     );
     if ref_face.is_none()
         && ref_pose.is_none()
         && ref_seg.is_none()
         && ref_proj.is_none()
+        && ref_bust.is_none()
         && ref_meas.is_none()
     {
         anyhow::bail!(
@@ -121,6 +123,14 @@ pub(super) async fn search_blend(
                 }
                 _ => None,
             };
+            let bust = match (&ref_bust, &e.bust) {
+                (Some(r), Some(c))
+                    if embedder::is_plausible_proj(r) && embedder::is_plausible_proj(c) =>
+                {
+                    Some(embedder::bust_similarity_pct(r, c))
+                }
+                _ => None,
+            };
             let meas = match (&ref_meas, recommender::feature_vector(&e.performer)) {
                 (Some(r), Some(c)) => Some(r.similarity_pct(&c)),
                 _ => None,
@@ -131,6 +141,7 @@ pub(super) async fn search_blend(
                     build,
                     volume,
                     proj,
+                    bust,
                     meas,
                 },
                 e.performer,
@@ -173,6 +184,7 @@ pub(super) async fn search_blend(
             ("frame", m.build),
             ("curves", m.volume),
             ("proj", m.proj),
+            ("bust", m.bust),
             ("stats", m.meas),
         ] {
             if let Some(v) = v {

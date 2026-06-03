@@ -119,7 +119,7 @@ pub(crate) async fn build_index(
             let n = pose_vecs.len().max(seg_vecs.len());
             let pose_c = embedder::body_centroid(&pose_vecs);
             let seg_c = embedder::body_centroid(&seg_vecs);
-            db.save_body_index(p, pose_c.as_deref(), seg_c.as_deref(), None, n)?;
+            db.save_body_index(p, pose_c.as_deref(), seg_c.as_deref(), None, None, n)?;
             indexed += 1;
             println!(
                 "  {} {} {}",
@@ -360,6 +360,7 @@ pub(crate) async fn ingest(
                 seg,
                 face,
                 proj,
+                bust: None, // set by the bust CV (#16); not computed at ingest yet
             })?;
             kept += 1;
             *by_view.entry(view).or_insert(0) += 1;
@@ -427,8 +428,8 @@ pub(crate) fn aggregate(db: &Database, names: Vec<String>) -> anyhow::Result<()>
     let mut written = 0usize;
     for name in &targets {
         let images = db.load_images(name, None)?;
-        let (pose, seg, proj, n) = luminary::database::aggregate_views(&images);
-        if pose.is_none() && seg.is_none() && proj.is_none() {
+        let (pose, seg, proj, bust, n) = luminary::database::aggregate_views(&images);
+        if pose.is_none() && seg.is_none() && proj.is_none() && bust.is_none() {
             println!(
                 "  {} {} — no usable frames ({} image(s))",
                 "–".bright_black(),
@@ -451,6 +452,7 @@ pub(crate) fn aggregate(db: &Database, names: Vec<String>) -> anyhow::Result<()>
             pose.as_deref(),
             seg.as_deref(),
             proj.as_deref(),
+            bust.as_deref(),
             n,
         )?;
         written += 1;
@@ -459,11 +461,12 @@ pub(crate) fn aggregate(db: &Database, names: Vec<String>) -> anyhow::Result<()>
             "✓".green(),
             name.bright_white(),
             format!(
-                "{} frame(s) → pose {} / shape {} / proj {}",
+                "{} frame(s) → pose {} / shape {} / proj {} / bust {}",
                 n,
                 if pose.is_some() { "✓" } else { "—" },
                 if seg.is_some() { "✓" } else { "—" },
                 if proj.is_some() { "✓" } else { "—" },
+                if bust.is_some() { "✓" } else { "—" },
             )
             .bright_black()
         );

@@ -286,6 +286,15 @@ pub fn is_plausible_proj(v: &[f32]) -> bool {
     !v.is_empty() && v.iter().all(|x| x.is_finite() && x.abs() <= 5.0)
 }
 
+/// Bust shape/projection similarity, 0–100%. The chest analog of
+/// [`proj_similarity_pct`] — the bust vector is the same kind of bounded
+/// body-ratio measure, so it reuses the smooth exponential falloff (and
+/// [`is_plausible_proj`] as the validity guard). The divisor is provisional;
+/// recalibrate against the bust corpus once the CV (#16) emits real vectors.
+pub fn bust_similarity_pct(a: &[f32], b: &[f32]) -> f64 {
+    proj_similarity_pct(a, b)
+}
+
 /// Generates a single embedding (convenience wrapper over the batch API).
 pub fn generate_embedding(image_url: &str) -> Result<Vec<f32>> {
     let urls = [image_url.to_string()];

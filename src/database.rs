@@ -71,6 +71,7 @@ impl Database {
                 pose_vec  BLOB,
                 seg_vec   BLOB,
                 proj_vec  BLOB,
+                bust_vec  BLOB,
                 n_frames  INTEGER NOT NULL DEFAULT 0
             )",
             [],
@@ -79,6 +80,10 @@ impl Database {
         let _ = self
             .conn
             .execute("ALTER TABLE body_index ADD COLUMN proj_vec BLOB", []);
+        // Add bust_vec (chest shape/projection centroid) to a pre-existing index.
+        let _ = self
+            .conn
+            .execute("ALTER TABLE body_index ADD COLUMN bust_vec BLOB", []);
 
         // Per-image corpus: one row per gathered image, tagged with its source,
         // view (front/rear/side/…) and a 0–1 quality score, plus the per-image
@@ -96,6 +101,7 @@ impl Database {
                 seg_vec   BLOB,
                 face_vec  BLOB,
                 proj_vec  BLOB,
+                bust_vec  BLOB,
                 PRIMARY KEY (performer, url)
             )",
             [],
@@ -108,6 +114,10 @@ impl Database {
         let _ = self
             .conn
             .execute("ALTER TABLE images ADD COLUMN proj_vec BLOB", []);
+        // Add bust_vec (chest shape/projection vector) to a pre-existing corpus.
+        let _ = self
+            .conn
+            .execute("ALTER TABLE images ADD COLUMN bust_vec BLOB", []);
 
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS performers (
@@ -504,13 +514,15 @@ mod tests {
             Some(&[1.0, 2.0, 3.0]),
             Some(&[0.5, 0.6]),
             Some(&[0.9]),
+            Some(&[0.7]),
             5,
         )
         .unwrap();
-        // Second performer: a pose vector but no clean shape or projection frame.
+        // Second performer: a pose vector but no clean shape/projection/bust frame.
         db.save_body_index(
             &Performer::new("No Shape".to_string()),
             Some(&[9.0]),
+            None,
             None,
             None,
             1,
@@ -531,6 +543,7 @@ mod tests {
         assert_eq!(star.pose, Some(vec![1.0, 2.0, 3.0]));
         assert_eq!(star.seg, Some(vec![0.5, 0.6]));
         assert_eq!(star.proj, Some(vec![0.9]));
+        assert_eq!(star.bust, Some(vec![0.7]));
         let no_shape = entries
             .iter()
             .find(|e| e.performer.name == "No Shape")
@@ -538,14 +551,17 @@ mod tests {
         assert_eq!(no_shape.pose, Some(vec![9.0]));
         assert_eq!(no_shape.seg, None);
         assert_eq!(no_shape.proj, None);
+        assert_eq!(no_shape.bust, None);
     }
 
     #[test]
     fn body_index_upsert_replaces() {
         let db = Database::new(":memory:").unwrap();
         let p = Performer::new("Dup".to_string());
-        db.save_body_index(&p, Some(&[1.0]), None, None, 1).unwrap();
-        db.save_body_index(&p, Some(&[2.0]), None, None, 1).unwrap();
+        db.save_body_index(&p, Some(&[1.0]), None, None, None, 1)
+            .unwrap();
+        db.save_body_index(&p, Some(&[2.0]), None, None, None, 1)
+            .unwrap();
         assert_eq!(db.body_index_count().unwrap(), 1);
         assert_eq!(db.load_body_index().unwrap()[0].pose, Some(vec![2.0]));
     }
@@ -558,6 +574,7 @@ mod tests {
         db.save_body_index(
             &Performer::new("Roster Star".to_string()),
             Some(&[1.0]),
+            None,
             None,
             None,
             1,
@@ -581,7 +598,7 @@ mod tests {
         let mut idx = Performer::new("Backfilled Star".to_string());
         idx.height = Some("168cm".to_string());
         idx.weight = Some("60kg".to_string());
-        db.save_body_index(&idx, Some(&[1.0]), None, None, 1)
+        db.save_body_index(&idx, Some(&[1.0]), None, None, None, 1)
             .unwrap();
         let mut cand = Performer::new("Backfilled Star".to_string());
         cand.measurements = Some("34D-26-38".to_string());
@@ -604,6 +621,7 @@ mod tests {
             seg: None,
             face,
             proj: None,
+            bust: None,
         }
     }
 
@@ -646,6 +664,7 @@ mod tests {
             seg,
             face: None,
             proj,
+            bust: None,
         }
     }
 
@@ -664,7 +683,7 @@ mod tests {
                 Some(vec![7.0]),
             ),
         ];
-        let (pose, seg, proj, n) = aggregate_views(&images);
+        let (pose, seg, proj, _bust, n) = aggregate_views(&images);
         assert_eq!(pose, Some(vec![3.0])); // (4*3 + 0*1)/4, side excluded
         assert_eq!(seg, Some(vec![2.0])); // only the front frame carries seg
         assert_eq!(proj, Some(vec![7.0])); // from the side frame only
@@ -672,7 +691,7 @@ mod tests {
 
         // Only side frames: no frontal pose/seg, but projection still aggregates.
         let only_side = vec![vrow("side", 1.0, None, None, Some(vec![5.0]))];
-        let (p, s, pr, n) = aggregate_views(&only_side);
+        let (p, s, pr, _bust, n) = aggregate_views(&only_side);
         assert!(p.is_none() && s.is_none());
         assert_eq!(pr, Some(vec![5.0]));
         assert_eq!(n, 1); // n spans all views, so a side-only performer still counts

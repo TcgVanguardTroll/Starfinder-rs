@@ -97,6 +97,14 @@ pub(crate) fn eval_quality(db: &Database) -> anyhow::Result<()> {
                     }
                     _ => None,
                 };
+                let bust = match (&q.bust, &e.bust) {
+                    (Some(r), Some(c))
+                        if embedder::is_plausible_proj(r) && embedder::is_plausible_proj(c) =>
+                    {
+                        Some(embedder::bust_similarity_pct(r, c))
+                    }
+                    _ => None,
+                };
                 let meas = match (&ref_meas, recommender::feature_vector(&e.performer)) {
                     (Some(r), Some(c)) => Some(r.similarity_pct(&c)),
                     _ => None,
@@ -107,6 +115,7 @@ pub(crate) fn eval_quality(db: &Database) -> anyhow::Result<()> {
                         build,
                         volume,
                         proj,
+                        bust,
                         meas,
                     },
                     e.performer.name.clone(),

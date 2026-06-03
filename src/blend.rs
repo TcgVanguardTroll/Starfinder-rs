@@ -16,6 +16,9 @@ pub struct ModalityScores {
     pub build: Option<f64>,
     pub volume: Option<f64>,
     pub proj: Option<f64>,
+    /// Bust shape/projection (chest analog of `proj`). None until a performer is
+    /// re-embedded with the bust CV (sidecar work is #16).
+    pub bust: Option<f64>,
     pub meas: Option<f64>,
 }
 
@@ -25,6 +28,7 @@ pub struct Weights {
     pub build: f64,
     pub volume: f64,
     pub proj: f64,
+    pub bust: f64,
     pub meas: f64,
 }
 
@@ -38,6 +42,10 @@ impl Default for Weights {
             build: 0.20,
             volume: 0.20,
             proj: 0.15,
+            // Added on top (weights need not sum to 1): bust is structurally
+            // absent until #16, so it changes no current ranking, while reserving
+            // a sensible influence (~bust/total) once a bust corpus exists.
+            bust: 0.12,
             meas: 0.10,
         }
     }
@@ -62,6 +70,7 @@ pub fn blend_scores(cands: &[ModalityScores], w: &Weights) -> Vec<f64> {
     let build = percentiles(&cands.iter().map(|c| c.build).collect::<Vec<_>>());
     let volume = percentiles(&cands.iter().map(|c| c.volume).collect::<Vec<_>>());
     let proj = percentiles(&cands.iter().map(|c| c.proj).collect::<Vec<_>>());
+    let bust = percentiles(&cands.iter().map(|c| c.bust).collect::<Vec<_>>());
     let meas = percentiles(&cands.iter().map(|c| c.meas).collect::<Vec<_>>());
 
     // Per candidate: the weighted percentile sum, and the total weight it covers.
@@ -72,6 +81,7 @@ pub fn blend_scores(cands: &[ModalityScores], w: &Weights) -> Vec<f64> {
                 (build[i], w.build),
                 (volume[i], w.volume),
                 (proj[i], w.proj),
+                (bust[i], w.bust),
                 (meas[i], w.meas),
             ];
             let mut num = 0.0;
@@ -131,6 +141,7 @@ mod tests {
             build,
             volume: None,
             proj: None,
+            bust: None,
             meas,
         }
     }

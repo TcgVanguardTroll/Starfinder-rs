@@ -13,6 +13,9 @@ pub struct BodyIndexEntry {
     /// Posterior-projection centroid, aggregated from `side` frames (None until
     /// the performer has been ingested with profile shots).
     pub proj: Option<Vec<f32>>,
+    /// Bust shape/projection centroid (chest analog of `proj`). None until a
+    /// performer is re-embedded with the bust CV (sidecar work is #16).
+    pub bust: Option<Vec<f32>>,
 }
 
 /// One row of the per-image corpus: a single gathered image, its provenance
@@ -28,19 +31,30 @@ pub struct ImageRow {
     pub face: Option<Vec<f32>>,
     /// Side-view posterior-projection vector (set only for `side` frames).
     pub proj: Option<Vec<f32>>,
+    /// Bust shape/projection vector (chest analog of `proj`). Set by the bust CV
+    /// (#16); None on every existing row until a bust re-embed runs.
+    pub bust: Option<Vec<f32>>,
 }
 
-/// The pose, seg, and proj centroids plus the contributing frame count returned
-/// by [`aggregate_views`].
-pub type AggregatedViews = (Option<Vec<f32>>, Option<Vec<f32>>, Option<Vec<f32>>, usize);
+/// The pose, seg, proj, and bust centroids plus the contributing frame count
+/// returned by [`aggregate_views`].
+pub type AggregatedViews = (
+    Option<Vec<f32>>,
+    Option<Vec<f32>>,
+    Option<Vec<f32>>,
+    Option<Vec<f32>>,
+    usize,
+);
 
 /// Aggregates a performer's per-image corpus into quality-weighted body
 /// centroids for the cached index. Frontal views (front/rear) feed the pose and
 /// seg centroids — a side/profile frame collapses shoulder width and corrupts
 /// both ratio vectors — while `side` frames feed the posterior-projection
-/// centroid that only a profile can reveal. Each image contributes in proportion
-/// to its `quality`. Returns `(pose, seg, proj, n_frames)`, where `n_frames` is
-/// the largest number of frames feeding any one centroid.
+/// centroid that only a profile can reveal. The bust centroid, like seg, is
+/// built from frontal frames (bust width/fullness reads frontally). Each image
+/// contributes in proportion to its `quality`. Returns `(pose, seg, proj, bust,
+/// n_frames)`, where `n_frames` is the largest number of frames feeding any one
+/// centroid.
 pub fn aggregate_views(images: &[ImageRow]) -> AggregatedViews {
     let is_frontal = |v: &str| v == "front" || v == "rear";
     let pose: Vec<(Vec<f32>, f32)> = images
@@ -58,11 +72,17 @@ pub fn aggregate_views(images: &[ImageRow]) -> AggregatedViews {
         .filter(|im| im.view == "side")
         .filter_map(|im| im.proj.clone().map(|p| (p, im.quality)))
         .collect();
-    let n = pose.len().max(seg.len()).max(proj.len());
+    let bust: Vec<(Vec<f32>, f32)> = images
+        .iter()
+        .filter(|im| is_frontal(&im.view))
+        .filter_map(|im| im.bust.clone().map(|p| (p, im.quality)))
+        .collect();
+    let n = pose.len().max(seg.len()).max(proj.len()).max(bust.len());
     (
         crate::embedder::weighted_body_centroid(&pose),
         crate::embedder::weighted_body_centroid(&seg),
         crate::embedder::weighted_body_centroid(&proj),
+        crate::embedder::weighted_body_centroid(&bust),
         n,
     )
 }
@@ -77,21 +97,25 @@ impl Database {
         pose: Option<&[f32]>,
         seg: Option<&[f32]>,
         proj: Option<&[f32]>,
+        bust: Option<&[f32]>,
         n_frames: usize,
     ) -> Result<()> {
         let data = serde_json::to_string(p)?;
         let pose_blob = pose.map(crate::embedder::embedding_to_blob);
         let seg_blob = seg.map(crate::embedder::embedding_to_blob);
         let proj_blob = proj.map(crate::embedder::embedding_to_blob);
+        let bust_blob = bust.map(crate::embedder::embedding_to_blob);
         self.conn.execute(
-            "INSERT OR REPLACE INTO body_index (name, data, pose_vec, seg_vec, proj_vec, n_frames)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT OR REPLACE INTO body_index
+                (name, data, pose_vec, seg_vec, proj_vec, bust_vec, n_frames)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             rusqlite::params![
                 p.name,
                 data,
                 pose_blob,
                 seg_blob,
                 proj_blob,
+                bust_blob,
                 n_frames as i64
             ],
         )?;
@@ -118,25 +142,27 @@ impl Database {
     pub fn load_body_index(&self) -> Result<Vec<BodyIndexEntry>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT data, pose_vec, seg_vec, proj_vec FROM body_index")?;
+            .prepare("SELECT data, pose_vec, seg_vec, proj_vec, bust_vec FROM body_index")?;
         let rows = stmt
             .query_map([], |row| {
                 let data: String = row.get(0)?;
                 let pose: rusqlite::types::Value = row.get(1)?;
                 let seg: rusqlite::types::Value = row.get(2)?;
                 let proj: rusqlite::types::Value = row.get(3)?;
-                Ok((data, pose, seg, proj))
+                let bust: rusqlite::types::Value = row.get(4)?;
+                Ok((data, pose, seg, proj, bust))
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
         let mut out = Vec::with_capacity(rows.len());
-        for (data, pose, seg, proj) in rows {
+        for (data, pose, seg, proj, bust) in rows {
             if let Ok(p) = serde_json::from_str::<Performer>(&data) {
                 out.push(BodyIndexEntry {
                     performer: p,
                     pose: decode_embedding(pose),
                     seg: decode_embedding(seg),
                     proj: decode_embedding(proj),
+                    bust: decode_embedding(bust),
                 });
             }
         }
@@ -149,10 +175,11 @@ impl Database {
         let seg = img.seg.as_deref().map(crate::embedder::embedding_to_blob);
         let face = img.face.as_deref().map(crate::embedder::embedding_to_blob);
         let proj = img.proj.as_deref().map(crate::embedder::embedding_to_blob);
+        let bust = img.bust.as_deref().map(crate::embedder::embedding_to_blob);
         self.conn.execute(
             "INSERT OR REPLACE INTO images
-                (performer, url, source, view, quality, pose_vec, seg_vec, face_vec, proj_vec)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                (performer, url, source, view, quality, pose_vec, seg_vec, face_vec, proj_vec, bust_vec)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             rusqlite::params![
                 img.performer,
                 img.url,
@@ -163,6 +190,7 @@ impl Database {
                 seg,
                 face,
                 proj,
+                bust,
             ],
         )?;
         Ok(())
@@ -188,12 +216,12 @@ impl Database {
     pub fn load_images(&self, performer: &str, view: Option<&str>) -> Result<Vec<ImageRow>> {
         let (sql, has_view) = match view {
             Some(_) => (
-                "SELECT performer, url, source, view, quality, pose_vec, seg_vec, face_vec, proj_vec
+                "SELECT performer, url, source, view, quality, pose_vec, seg_vec, face_vec, proj_vec, bust_vec
                  FROM images WHERE performer = ?1 AND view = ?2",
                 true,
             ),
             None => (
-                "SELECT performer, url, source, view, quality, pose_vec, seg_vec, face_vec, proj_vec
+                "SELECT performer, url, source, view, quality, pose_vec, seg_vec, face_vec, proj_vec, bust_vec
                  FROM images WHERE performer = ?1",
                 false,
             ),
@@ -210,6 +238,7 @@ impl Database {
                 seg: decode_embedding(row.get(6)?),
                 face: decode_embedding(row.get(7)?),
                 proj: decode_embedding(row.get(8)?),
+                bust: decode_embedding(row.get(9)?),
             })
         };
         let rows = if has_view {
