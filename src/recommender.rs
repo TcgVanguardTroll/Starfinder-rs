@@ -383,6 +383,19 @@ fn weight_f64(p: &Performer) -> f64 {
         .unwrap_or(0.5)
 }
 
+/// Normalised BMI (0–1 over ~16–32) = weight ÷ height² — the "physics" of build
+/// that neither height nor weight captures alone (55kg reads slim at 175cm but
+/// curvy at 160cm). 0.5 (neutral) when either height or weight is unknown.
+fn bmi_f64(p: &Performer) -> f64 {
+    match (performer_height_cm(p), performer_weight_kg(p)) {
+        (Some(h), Some(w)) if h > 0.0 => {
+            let m = h / 100.0;
+            ((w / (m * m) - 16.0) / 16.0).clamp(0.0, 1.0)
+        }
+        _ => 0.5,
+    }
+}
+
 fn str_to_id(val: Option<&str>, options: &[&str]) -> f64 {
     let v = val.unwrap_or("Unknown");
     options
@@ -517,6 +530,7 @@ pub fn feature_vector(p: &Performer) -> Option<FeatureVec> {
     let age = age_f64(p);
     let height = height_f64(p);
     let weight = weight_f64(p);
+    let bmi = bmi_f64(p);
     let inv_whr = (1.0 - whr.clamp(0.5, 1.0) / 0.5).clamp(0.0, 1.0);
 
     let eth = str_to_id(
@@ -553,6 +567,7 @@ pub fn feature_vector(p: &Performer) -> Option<FeatureVec> {
             height * 2.0,  // stature × 2 — short vs tall changes the whole build
             cup * 1.5,     // cup × 1.5
             weight * 1.5,  // weight × 1.5 — slight vs heavy frame
+            bmi * 2.0,     // BMI × 2 — build (slim↔heavy) from height+weight together
             age * 1.0,     // age
             // appearance dims (lower weight)
             eth * 0.5,
@@ -581,7 +596,7 @@ impl FeatureVec {
     /// Max possible distance given the weight vector
     fn max_distance() -> f64 {
         // sqrt(sum of squared max differences per dimension); order matches feature_vector
-        let max_vals = [3.0_f64, 2.0, 2.0, 1.5, 1.5, 1.0, 0.5, 0.3, 0.2];
+        let max_vals = [3.0_f64, 2.0, 2.0, 1.5, 1.5, 2.0, 1.0, 0.5, 0.3, 0.2];
         max_vals.iter().map(|v| v.powi(2)).sum::<f64>().sqrt()
     }
 
