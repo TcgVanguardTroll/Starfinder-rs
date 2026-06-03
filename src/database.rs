@@ -572,6 +572,30 @@ impl Database {
         Ok(None)
     }
 
+    /// Best stored Performer metadata for a name *outside* the user's library:
+    /// the candidates corpus (from `warm`) or the cached `body_index` entry,
+    /// preferring whichever actually carries measurements (an over-aggregated
+    /// index row can be bare). Lets `aggregate` keep a roster performer's
+    /// attributes instead of blanking them with a name-only record.
+    pub fn get_known_performer(&self, name: &str) -> Result<Option<Performer>> {
+        let load = |sql: &str| -> Option<Performer> {
+            self.conn
+                .query_row(sql, params![name], |r| r.get::<_, String>(0))
+                .ok()
+                .and_then(|d| serde_json::from_str::<Performer>(&d).ok())
+        };
+        let has_meas = |p: &Performer| p.measurements.as_deref().is_some_and(|m| !m.is_empty());
+        let cand = load("SELECT data FROM candidates WHERE name = ?1");
+        let idx = load("SELECT data FROM body_index WHERE name = ?1");
+        if cand.as_ref().is_some_and(&has_meas) {
+            return Ok(cand);
+        }
+        if idx.as_ref().is_some_and(&has_meas) {
+            return Ok(idx);
+        }
+        Ok(cand.or(idx))
+    }
+
     /// Gets all performers
     pub fn get_all_performers(&self) -> Result<Vec<Performer>> {
         let mut stmt = self.conn.prepare("SELECT data FROM performers")?;
@@ -739,6 +763,28 @@ mod tests {
         db.save_body_index(&p, Some(&[2.0]), None, None, 1).unwrap();
         assert_eq!(db.body_index_count().unwrap(), 1);
         assert_eq!(db.load_body_index().unwrap()[0].pose, Some(vec![2.0]));
+    }
+
+    #[test]
+    fn known_performer_prefers_record_with_measurements() {
+        let db = Database::new(":memory:").unwrap();
+        // A bare body_index row (what an over-aggregation leaves) plus a candidate
+        // record that still carries measurements — prefer the latter.
+        db.save_body_index(
+            &Performer::new("Roster Star".to_string()),
+            Some(&[1.0]),
+            None,
+            None,
+            1,
+        )
+        .unwrap();
+        let mut full = Performer::new("Roster Star".to_string());
+        full.measurements = Some("34D-26-38".to_string());
+        db.save_candidate(&full, &[0.1, 0.2]).unwrap();
+
+        let got = db.get_known_performer("Roster Star").unwrap().unwrap();
+        assert_eq!(got.measurements.as_deref(), Some("34D-26-38"));
+        assert!(db.get_known_performer("Nobody").unwrap().is_none());
     }
 
     fn img(url: &str, view: &str, face: Option<Vec<f32>>) -> ImageRow {

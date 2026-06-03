@@ -545,12 +545,14 @@ pub(crate) fn aggregate(db: &Database, names: Vec<String>) -> anyhow::Result<()>
             );
             continue;
         }
-        // Carry the stored performer record into the index when we have it, so
-        // body-search keeps its attributes; otherwise a bare name is enough.
+        // Carry the performer's metadata into the index: the library record if we
+        // have one, else the roster/candidate metadata (so a roster performer
+        // keeps measurements/ethnicity instead of being blanked), else bare name.
         let performer = db
             .get_performer(name)
             .ok()
             .flatten()
+            .or_else(|| db.get_known_performer(name).ok().flatten())
             .unwrap_or_else(|| models::Performer::new(name.clone()));
         db.save_body_index(
             &performer,
