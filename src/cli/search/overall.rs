@@ -13,6 +13,7 @@ pub(super) async fn search_blend(
     reference: &models::Performer,
     limit: usize,
     images: bool,
+    body_only: bool,
 ) -> anyhow::Result<()> {
     // Reference modalities — all local, no gathering.
     let ref_face = db.get_embedding(&reference.name).ok().flatten();
@@ -38,9 +39,13 @@ pub(super) async fn search_blend(
     };
     println!(
         "{}",
-        format!("Blending candidates by similarity to {}:", reference.name)
-            .bright_cyan()
-            .bold()
+        format!(
+            "Blending candidates by {} similarity to {}:",
+            if body_only { "BODY-TYPE" } else { "overall" },
+            reference.name
+        )
+        .bright_cyan()
+        .bold()
     );
     println!(
         "  {}  {}  {}  {}  {}  {}",
@@ -150,7 +155,12 @@ pub(super) async fn search_blend(
         .collect();
 
     let raw: Vec<blend::ModalityScores> = candidates.iter().map(|(m, _)| m.clone()).collect();
-    let scores = blend::blend_scores(&raw, &blend::Weights::default());
+    let weights = if body_only {
+        blend::Weights::body_only()
+    } else {
+        blend::Weights::default()
+    };
+    let scores = blend::blend_scores(&raw, &weights);
     let mut ranked: Vec<(f64, blend::ModalityScores, models::Performer)> = scores
         .into_iter()
         .zip(candidates)
@@ -168,8 +178,13 @@ pub(super) async fn search_blend(
     println!(
         "{}",
         format!(
-            "Top {} by multi-modal blend to {}:",
+            "Top {} by {} to {}:",
             ranked.len(),
+            if body_only {
+                "body-type match"
+            } else {
+                "multi-modal blend"
+            },
             reference.name
         )
         .bright_cyan()

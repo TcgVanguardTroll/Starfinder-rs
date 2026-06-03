@@ -32,6 +32,23 @@ pub struct Weights {
     pub meas: f64,
 }
 
+impl Weights {
+    /// Body-type-only weights: face excluded (0.0) so ranking is driven purely by
+    /// how similar the *body* is — skeletal frame, silhouette fullness, butt
+    /// projection, bust, and recorded measurements. For "find an extremely
+    /// similar body type" rather than "looks like + built like" (the default).
+    pub fn body_only() -> Self {
+        Weights {
+            face: 0.0,
+            build: 0.22,
+            volume: 0.22,
+            proj: 0.18,
+            bust: 0.13,
+            meas: 0.18,
+        }
+    }
+}
+
 impl Default for Weights {
     fn default() -> Self {
         // Face (identity) leads; build/volume/projection describe the body;
@@ -187,6 +204,22 @@ mod tests {
         assert!(s2[0] > s2[1]);
         // The best-covered candidate in a pool still reaches ~100.
         assert!((s2[0] - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn body_only_ignores_face() {
+        // cand0 has the best face but weaker build; cand1 the reverse. Under
+        // body-only weights (face = 0), the better BUILD wins — the opposite of
+        // the default blend, where the leading face weight would tilt to cand0.
+        let cands = vec![
+            ms(Some(95.0), Some(70.0), None), // best face, weaker build
+            ms(Some(50.0), Some(98.0), None), // weak face, best build
+        ];
+        let s = blend_scores(&cands, &Weights::body_only());
+        assert!(s[1] > s[0]); // build decides; face ignored
+                              // Sanity: the default blend (face leads) tilts the other way here.
+        let d = blend_scores(&cands, &Weights::default());
+        assert!(d[0] > d[1]);
     }
 
     #[test]
