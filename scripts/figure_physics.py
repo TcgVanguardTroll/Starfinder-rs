@@ -29,7 +29,8 @@ NOSE, L_ANK, R_ANK = 0, 27, 28
 NOSE_ANKLE_FRAC = 0.84   # nose->ankle vertical span as a fraction of full height
 DEPTH_RATIO = 0.72       # assumed body depth:width at the torso (anthropometric)
 TRUNK_MASS_FRAC = 0.46   # trunk share of body mass (to extrapolate full weight)
-SAMPLES = 150
+SAMPLES = int(sys.argv[3]) if len(sys.argv) > 3 else 150  # frames sampled per clip
+MIN_FULL_BODY = 3        # minimum scale-anchor frames to report
 PROC_WIDTH = 720
 
 
@@ -131,7 +132,7 @@ def main():
         trunk_cm.append(torso * hpx * cmpp)
     cap.release()
 
-    if full_body < 4:
+    if full_body < MIN_FULL_BODY:
         print(json.dumps({"ok": False, "full_body_frames": full_body, "funnel": funnel,
                           "error": "too few full-body frames to calibrate scale"}))
         return
