@@ -9,3 +9,5 @@ __pycache__/
 target-live/
 scripts/motion_dataset.json
 scripts/backfill_stats.json
+scripts/footage_corpus.json
+scripts/seeds.json
