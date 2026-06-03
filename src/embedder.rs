@@ -248,6 +248,44 @@ pub fn seg_similarity_pct(a: &[f32], b: &[f32]) -> f64 {
     (sim * 100.0).round()
 }
 
+/// Side-projection (glute / butt-shape) similarity as a 0–100%.
+///
+/// proj is a silhouette-*depth* ratio vector, and its L2 distances span a much
+/// wider range than pose/seg with a long right tail: genuinely-similar builds sit
+/// around d≈0.5–0.8, typical different builds around d≈2–4, and a few first-cut
+/// CV frames produce wild values (d in the tens or hundreds). A hard-clamped
+/// linear map (like seg's `d/2.0`) ties >half the pool at exactly 0%, which
+/// erases ranking information the blend's rank-normalisation depends on.
+///
+/// Instead use a smooth exponential falloff `e^(-d/k)`: strictly monotonic and
+/// never exactly zero, so every candidate keeps a distinct, orderable score.
+/// `k = 2.5` is calibrated against the live corpus — a close match (d≈0.6) reads
+/// ~80%, a typical different build (d≈2.8) ~30%, and far/degenerate vectors decay
+/// toward (but never reach) 0% while staying correctly ordered. Pair with
+/// [`is_plausible_proj`] to drop degenerate vectors before comparing.
+pub fn proj_similarity_pct(a: &[f32], b: &[f32]) -> f64 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let d: f32 = a
+        .iter()
+        .zip(b.iter())
+        .map(|(x, y)| (x - y).powi(2))
+        .sum::<f32>()
+        .sqrt();
+    let sim = (-(d as f64) / 2.5).exp();
+    (sim * 100.0).round()
+}
+
+/// Whether a side-projection vector is physically plausible. proj components are
+/// body-depth ratios that sit in a bounded band (~0.2–3.5); a degenerate frame
+/// (near-zero torso-height divisor or a stray landmark) yields components in the
+/// tens or hundreds. Such a vector is meaningless to compare, so callers treat
+/// proj as *unavailable* for it rather than emitting a misleading ~0% score.
+pub fn is_plausible_proj(v: &[f32]) -> bool {
+    !v.is_empty() && v.iter().all(|x| x.is_finite() && x.abs() <= 5.0)
+}
+
 /// Generates a single embedding (convenience wrapper over the batch API).
 pub fn generate_embedding(image_url: &str) -> Result<Vec<f32>> {
     let urls = [image_url.to_string()];
@@ -475,6 +513,31 @@ mod tests {
         assert_eq!(seg_similarity_pct(&a, &a), 100.0);
         assert!(seg_similarity_pct(&a, &near) > seg_similarity_pct(&a, &far));
         assert_eq!(seg_similarity_pct(&[1.0, 2.0], &[1.0]), 0.0);
+    }
+
+    #[test]
+    fn proj_similarity_falls_off_smoothly_without_ties() {
+        let a = vec![0.9, 1.2, 2.3, 0.8]; // Christina-like glute projection
+        let near = vec![0.95, 1.25, 2.4, 0.78];
+        let mid = vec![1.3, 0.9, 1.8, 1.1];
+        let far = vec![3.0, 0.2, 0.5, 2.0];
+        assert_eq!(proj_similarity_pct(&a, &a), 100.0);
+        // Strictly monotonic in distance — the property the blend's rank-norm needs.
+        assert!(proj_similarity_pct(&a, &near) > proj_similarity_pct(&a, &mid));
+        assert!(proj_similarity_pct(&a, &mid) > proj_similarity_pct(&a, &far));
+        // A close match reads high; a different one reads low but stays > 0.
+        assert!(proj_similarity_pct(&a, &near) > 80.0);
+        assert!(proj_similarity_pct(&a, &far) > 0.0 && proj_similarity_pct(&a, &far) < 50.0);
+        assert_eq!(proj_similarity_pct(&[1.0, 2.0], &[1.0]), 0.0);
+    }
+
+    #[test]
+    fn is_plausible_proj_rejects_degenerate_vectors() {
+        assert!(is_plausible_proj(&[0.9, 1.2, 2.3, 0.8]));
+        assert!(!is_plausible_proj(&[0.9, 214.0, 2.3, 0.8])); // blown-up CV frame
+        assert!(!is_plausible_proj(&[])); // empty
+        assert!(!is_plausible_proj(&[f32::NAN, 1.0]));
+        assert!(!is_plausible_proj(&[f32::INFINITY]));
     }
 
     #[test]

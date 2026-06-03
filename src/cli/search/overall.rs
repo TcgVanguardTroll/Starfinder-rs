@@ -114,7 +114,11 @@ pub(super) async fn search_blend(
                 _ => None,
             };
             let proj = match (&ref_proj, &e.proj) {
-                (Some(r), Some(c)) => Some(embedder::seg_similarity_pct(r, c)),
+                (Some(r), Some(c))
+                    if embedder::is_plausible_proj(r) && embedder::is_plausible_proj(c) =>
+                {
+                    Some(embedder::proj_similarity_pct(r, c))
+                }
                 _ => None,
             };
             let meas = match (&ref_meas, recommender::feature_vector(&e.performer)) {
