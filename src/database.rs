@@ -19,6 +19,9 @@ pub struct BodyIndexEntry {
     pub performer: Performer,
     pub pose: Option<Vec<f32>>,
     pub seg: Option<Vec<f32>>,
+    /// Posterior-projection centroid, aggregated from `side` frames (None until
+    /// the performer has been ingested with profile shots).
+    pub proj: Option<Vec<f32>>,
 }
 
 /// One row of the per-image corpus: a single gathered image, its provenance
@@ -32,16 +35,22 @@ pub struct ImageRow {
     pub pose: Option<Vec<f32>>,
     pub seg: Option<Vec<f32>>,
     pub face: Option<Vec<f32>>,
+    /// Side-view posterior-projection vector (set only for `side` frames).
+    pub proj: Option<Vec<f32>>,
 }
 
+/// The pose, seg, and proj centroids plus the contributing frame count returned
+/// by [`aggregate_views`].
+pub type AggregatedViews = (Option<Vec<f32>>, Option<Vec<f32>>, Option<Vec<f32>>, usize);
+
 /// Aggregates a performer's per-image corpus into quality-weighted body
-/// centroids for the cached index. Only frontal views (front/rear) feed the pose
-/// and seg centroids — a side/profile frame collapses shoulder width and
-/// corrupts both ratio vectors (the seg sidecar already rejects side; this also
-/// drops any side pose vector). Each image contributes in proportion to its
-/// `quality`. Returns `(pose_centroid, seg_centroid, n_frames)`, where
-/// `n_frames` is how many frontal frames contributed.
-pub fn aggregate_views(images: &[ImageRow]) -> (Option<Vec<f32>>, Option<Vec<f32>>, usize) {
+/// centroids for the cached index. Frontal views (front/rear) feed the pose and
+/// seg centroids — a side/profile frame collapses shoulder width and corrupts
+/// both ratio vectors — while `side` frames feed the posterior-projection
+/// centroid that only a profile can reveal. Each image contributes in proportion
+/// to its `quality`. Returns `(pose, seg, proj, n_frames)`, where `n_frames` is
+/// the largest number of frames feeding any one centroid.
+pub fn aggregate_views(images: &[ImageRow]) -> AggregatedViews {
     let is_frontal = |v: &str| v == "front" || v == "rear";
     let pose: Vec<(Vec<f32>, f32)> = images
         .iter()
@@ -53,10 +62,16 @@ pub fn aggregate_views(images: &[ImageRow]) -> (Option<Vec<f32>>, Option<Vec<f32
         .filter(|im| is_frontal(&im.view))
         .filter_map(|im| im.seg.clone().map(|s| (s, im.quality)))
         .collect();
-    let n = pose.len().max(seg.len());
+    let proj: Vec<(Vec<f32>, f32)> = images
+        .iter()
+        .filter(|im| im.view == "side")
+        .filter_map(|im| im.proj.clone().map(|p| (p, im.quality)))
+        .collect();
+    let n = pose.len().max(seg.len()).max(proj.len());
     (
         crate::embedder::weighted_body_centroid(&pose),
         crate::embedder::weighted_body_centroid(&seg),
+        crate::embedder::weighted_body_centroid(&proj),
         n,
     )
 }
@@ -115,10 +130,15 @@ impl Database {
                 data      TEXT NOT NULL,
                 pose_vec  BLOB,
                 seg_vec   BLOB,
+                proj_vec  BLOB,
                 n_frames  INTEGER NOT NULL DEFAULT 0
             )",
             [],
         )?;
+        // Add proj_vec (side-view projection centroid) to a pre-existing index.
+        let _ = self
+            .conn
+            .execute("ALTER TABLE body_index ADD COLUMN proj_vec BLOB", []);
 
         // Per-image corpus: one row per gathered image, tagged with its source,
         // view (front/rear/side/…) and a 0–1 quality score, plus the per-image
@@ -135,6 +155,7 @@ impl Database {
                 pose_vec  BLOB,
                 seg_vec   BLOB,
                 face_vec  BLOB,
+                proj_vec  BLOB,
                 PRIMARY KEY (performer, url)
             )",
             [],
@@ -143,6 +164,10 @@ impl Database {
             "CREATE INDEX IF NOT EXISTS idx_images_view ON images(performer, view)",
             [],
         )?;
+        // Add proj_vec (side-view projection vector) to a pre-existing corpus.
+        let _ = self
+            .conn
+            .execute("ALTER TABLE images ADD COLUMN proj_vec BLOB", []);
 
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS performers (
@@ -289,15 +314,24 @@ impl Database {
         p: &Performer,
         pose: Option<&[f32]>,
         seg: Option<&[f32]>,
+        proj: Option<&[f32]>,
         n_frames: usize,
     ) -> Result<()> {
         let data = serde_json::to_string(p)?;
         let pose_blob = pose.map(crate::embedder::embedding_to_blob);
         let seg_blob = seg.map(crate::embedder::embedding_to_blob);
+        let proj_blob = proj.map(crate::embedder::embedding_to_blob);
         self.conn.execute(
-            "INSERT OR REPLACE INTO body_index (name, data, pose_vec, seg_vec, n_frames)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![p.name, data, pose_blob, seg_blob, n_frames as i64],
+            "INSERT OR REPLACE INTO body_index (name, data, pose_vec, seg_vec, proj_vec, n_frames)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                p.name,
+                data,
+                pose_blob,
+                seg_blob,
+                proj_blob,
+                n_frames as i64
+            ],
         )?;
         Ok(())
     }
@@ -318,27 +352,29 @@ impl Database {
             .query_row("SELECT COUNT(*) FROM body_index", [], |r| r.get(0))?)
     }
 
-    /// Loads the whole body index (performer + optional pose/seg vectors).
+    /// Loads the whole body index (performer + optional pose/seg/proj vectors).
     pub fn load_body_index(&self) -> Result<Vec<BodyIndexEntry>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT data, pose_vec, seg_vec FROM body_index")?;
+            .prepare("SELECT data, pose_vec, seg_vec, proj_vec FROM body_index")?;
         let rows = stmt
             .query_map([], |row| {
                 let data: String = row.get(0)?;
                 let pose: rusqlite::types::Value = row.get(1)?;
                 let seg: rusqlite::types::Value = row.get(2)?;
-                Ok((data, pose, seg))
+                let proj: rusqlite::types::Value = row.get(3)?;
+                Ok((data, pose, seg, proj))
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
         let mut out = Vec::with_capacity(rows.len());
-        for (data, pose, seg) in rows {
+        for (data, pose, seg, proj) in rows {
             if let Ok(p) = serde_json::from_str::<Performer>(&data) {
                 out.push(BodyIndexEntry {
                     performer: p,
                     pose: decode_embedding(pose),
                     seg: decode_embedding(seg),
+                    proj: decode_embedding(proj),
                 });
             }
         }
@@ -350,10 +386,11 @@ impl Database {
         let pose = img.pose.as_deref().map(crate::embedder::embedding_to_blob);
         let seg = img.seg.as_deref().map(crate::embedder::embedding_to_blob);
         let face = img.face.as_deref().map(crate::embedder::embedding_to_blob);
+        let proj = img.proj.as_deref().map(crate::embedder::embedding_to_blob);
         self.conn.execute(
             "INSERT OR REPLACE INTO images
-                (performer, url, source, view, quality, pose_vec, seg_vec, face_vec)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                (performer, url, source, view, quality, pose_vec, seg_vec, face_vec, proj_vec)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             rusqlite::params![
                 img.performer,
                 img.url,
@@ -363,6 +400,7 @@ impl Database {
                 pose,
                 seg,
                 face,
+                proj,
             ],
         )?;
         Ok(())
@@ -388,12 +426,12 @@ impl Database {
     pub fn load_images(&self, performer: &str, view: Option<&str>) -> Result<Vec<ImageRow>> {
         let (sql, has_view) = match view {
             Some(_) => (
-                "SELECT performer, url, source, view, quality, pose_vec, seg_vec, face_vec
+                "SELECT performer, url, source, view, quality, pose_vec, seg_vec, face_vec, proj_vec
                  FROM images WHERE performer = ?1 AND view = ?2",
                 true,
             ),
             None => (
-                "SELECT performer, url, source, view, quality, pose_vec, seg_vec, face_vec
+                "SELECT performer, url, source, view, quality, pose_vec, seg_vec, face_vec, proj_vec
                  FROM images WHERE performer = ?1",
                 false,
             ),
@@ -409,6 +447,7 @@ impl Database {
                 pose: decode_embedding(row.get(5)?),
                 seg: decode_embedding(row.get(6)?),
                 face: decode_embedding(row.get(7)?),
+                proj: decode_embedding(row.get(8)?),
             })
         };
         let rows = if has_view {
@@ -651,12 +690,19 @@ mod tests {
 
         let mut p = Performer::new("Test Star".to_string());
         p.measurements = Some("34D-30-42".to_string());
-        db.save_body_index(&p, Some(&[1.0, 2.0, 3.0]), Some(&[0.5, 0.6]), 5)
-            .unwrap();
-        // Second performer: a pose vector but no clean shape frame.
+        db.save_body_index(
+            &p,
+            Some(&[1.0, 2.0, 3.0]),
+            Some(&[0.5, 0.6]),
+            Some(&[0.9]),
+            5,
+        )
+        .unwrap();
+        // Second performer: a pose vector but no clean shape or projection frame.
         db.save_body_index(
             &Performer::new("No Shape".to_string()),
             Some(&[9.0]),
+            None,
             None,
             1,
         )
@@ -675,20 +721,22 @@ mod tests {
             .unwrap();
         assert_eq!(star.pose, Some(vec![1.0, 2.0, 3.0]));
         assert_eq!(star.seg, Some(vec![0.5, 0.6]));
+        assert_eq!(star.proj, Some(vec![0.9]));
         let no_shape = entries
             .iter()
             .find(|e| e.performer.name == "No Shape")
             .unwrap();
         assert_eq!(no_shape.pose, Some(vec![9.0]));
         assert_eq!(no_shape.seg, None);
+        assert_eq!(no_shape.proj, None);
     }
 
     #[test]
     fn body_index_upsert_replaces() {
         let db = Database::new(":memory:").unwrap();
         let p = Performer::new("Dup".to_string());
-        db.save_body_index(&p, Some(&[1.0]), None, 1).unwrap();
-        db.save_body_index(&p, Some(&[2.0]), None, 1).unwrap();
+        db.save_body_index(&p, Some(&[1.0]), None, None, 1).unwrap();
+        db.save_body_index(&p, Some(&[2.0]), None, None, 1).unwrap();
         assert_eq!(db.body_index_count().unwrap(), 1);
         assert_eq!(db.load_body_index().unwrap()[0].pose, Some(vec![2.0]));
     }
@@ -703,6 +751,7 @@ mod tests {
             pose: None,
             seg: None,
             face,
+            proj: None,
         }
     }
 
@@ -728,7 +777,13 @@ mod tests {
         assert_eq!(db.load_images("Star", Some("side")).unwrap().len(), 1);
     }
 
-    fn vrow(view: &str, quality: f32, pose: Option<Vec<f32>>, seg: Option<Vec<f32>>) -> ImageRow {
+    fn vrow(
+        view: &str,
+        quality: f32,
+        pose: Option<Vec<f32>>,
+        seg: Option<Vec<f32>>,
+        proj: Option<Vec<f32>>,
+    ) -> ImageRow {
         ImageRow {
             performer: "Star".to_string(),
             url: format!("u-{}-{}", view, quality),
@@ -738,25 +793,36 @@ mod tests {
             pose,
             seg,
             face: None,
+            proj,
         }
     }
 
     #[test]
-    fn aggregate_weights_by_quality_and_excludes_side() {
+    fn aggregate_weights_by_quality_and_splits_views() {
         let images = vec![
-            vrow("front", 3.0, Some(vec![4.0]), Some(vec![2.0])),
-            vrow("rear", 1.0, Some(vec![0.0]), None),
-            // A side frame's (bogus) vectors must not reach either centroid.
-            vrow("side", 9.0, Some(vec![100.0]), Some(vec![100.0])),
+            vrow("front", 3.0, Some(vec![4.0]), Some(vec![2.0]), None),
+            vrow("rear", 1.0, Some(vec![0.0]), None, None),
+            // A side frame feeds the projection centroid; its (bogus) pose/seg
+            // must NOT reach the frontal centroids.
+            vrow(
+                "side",
+                2.0,
+                Some(vec![100.0]),
+                Some(vec![100.0]),
+                Some(vec![7.0]),
+            ),
         ];
-        let (pose, seg, n) = aggregate_views(&images);
+        let (pose, seg, proj, n) = aggregate_views(&images);
         assert_eq!(pose, Some(vec![3.0])); // (4*3 + 0*1)/4, side excluded
         assert_eq!(seg, Some(vec![2.0])); // only the front frame carries seg
-        assert_eq!(n, 2); // two frontal pose frames contributed
+        assert_eq!(proj, Some(vec![7.0])); // from the side frame only
+        assert_eq!(n, 2); // two frontal pose frames
 
-        // With only side frames there's nothing frontal to aggregate.
-        let only_side = vec![vrow("side", 1.0, Some(vec![1.0]), Some(vec![1.0]))];
-        let (p, s, n) = aggregate_views(&only_side);
-        assert!(p.is_none() && s.is_none() && n == 0);
+        // Only side frames: no frontal pose/seg, but projection still aggregates.
+        let only_side = vec![vrow("side", 1.0, None, None, Some(vec![5.0]))];
+        let (p, s, pr, n) = aggregate_views(&only_side);
+        assert!(p.is_none() && s.is_none());
+        assert_eq!(pr, Some(vec![5.0]));
+        assert_eq!(n, 1); // n spans all views, so a side-only performer still counts
     }
 }

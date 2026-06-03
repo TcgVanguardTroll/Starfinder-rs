@@ -289,7 +289,7 @@ pub(crate) async fn build_index(
             let n = pose_vecs.len().max(seg_vecs.len());
             let pose_c = embedder::body_centroid(&pose_vecs);
             let seg_c = embedder::body_centroid(&seg_vecs);
-            db.save_body_index(p, pose_c.as_deref(), seg_c.as_deref(), n)?;
+            db.save_body_index(p, pose_c.as_deref(), seg_c.as_deref(), None, n)?;
             indexed += 1;
             println!(
                 "  {} {} {}",
@@ -436,6 +436,7 @@ pub(crate) async fn ingest(
             let body = bodies.get(i);
             let pose = body.and_then(|b| b.pose.clone());
             let seg = body.and_then(|b| b.seg.clone());
+            let proj = body.and_then(|b| b.proj.clone());
             let pose_view = body.and_then(|b| b.view.as_deref());
 
             // Identity gate: a detected face that doesn't match the seed is a
@@ -451,7 +452,7 @@ pub(crate) async fn ingest(
             }
 
             // Nothing usable extracted at all — don't store an empty row.
-            if face.is_none() && pose.is_none() && seg.is_none() {
+            if face.is_none() && pose.is_none() && seg.is_none() && proj.is_none() {
                 continue;
             }
 
@@ -466,6 +467,7 @@ pub(crate) async fn ingest(
                 pose,
                 seg,
                 face,
+                proj,
             })?;
             kept += 1;
             *by_view.entry(view).or_insert(0) += 1;
@@ -533,10 +535,10 @@ pub(crate) fn aggregate(db: &Database, names: Vec<String>) -> anyhow::Result<()>
     let mut written = 0usize;
     for name in &targets {
         let images = db.load_images(name, None)?;
-        let (pose, seg, n) = luminary::database::aggregate_views(&images);
-        if pose.is_none() && seg.is_none() {
+        let (pose, seg, proj, n) = luminary::database::aggregate_views(&images);
+        if pose.is_none() && seg.is_none() && proj.is_none() {
             println!(
-                "  {} {} — no frontal frames ({} image(s))",
+                "  {} {} — no usable frames ({} image(s))",
                 "–".bright_black(),
                 name.bright_black(),
                 images.len()
@@ -550,17 +552,24 @@ pub(crate) fn aggregate(db: &Database, names: Vec<String>) -> anyhow::Result<()>
             .ok()
             .flatten()
             .unwrap_or_else(|| models::Performer::new(name.clone()));
-        db.save_body_index(&performer, pose.as_deref(), seg.as_deref(), n)?;
+        db.save_body_index(
+            &performer,
+            pose.as_deref(),
+            seg.as_deref(),
+            proj.as_deref(),
+            n,
+        )?;
         written += 1;
         println!(
             "  {} {} {}",
             "✓".green(),
             name.bright_white(),
             format!(
-                "{} frontal frame(s) → pose {} / shape {}",
+                "{} frame(s) → pose {} / shape {} / proj {}",
                 n,
                 if pose.is_some() { "✓" } else { "—" },
                 if seg.is_some() { "✓" } else { "—" },
+                if proj.is_some() { "✓" } else { "—" },
             )
             .bright_black()
         );

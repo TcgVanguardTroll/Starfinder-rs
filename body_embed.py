@@ -114,6 +114,10 @@ def build_vector(lm):
     Returns None for cropped or non-standing poses so they don't skew a centroid."""
     if not is_full_body(lm) or not is_upright(lm):
         return None
+    # A profile/side view collapses shoulder breadth, making every breadth ratio
+    # meaningless — reject it here (build_proj_vector handles side frames instead).
+    if abs(lm[11].x - lm[12].x) < 0.08:
+        return None
 
     p = lambda i: (lm[i].x, lm[i].y)
     sh_w = d(p(11), p(12))           # shoulder breadth
@@ -210,6 +214,57 @@ def build_seg_vector(lm, mask):
     ]
 
 
+def build_proj_vector(lm, mask):
+    """Posterior-*projection* ratios from a SIDE/profile silhouette — how far the
+    lower body (buttocks) pushes back front-to-back, the thing a frontal width
+    vector can't see (two builds with identical frontal hips can differ a lot in
+    profile). Reads silhouette *depth* (the same central-run width_at, but in a
+    profile that run spans front->back) at waist / glute / thigh height,
+    normalised by torso *height* (shoulder->hip) — height stays meaningful in
+    profile, where shoulder *width* collapses. Gated to profile, standing,
+    full-body frames.
+
+    First cut: the depth ratios capture relative lower-body projection, but the
+    exact landmark heights and divisors want empirical tuning against real
+    profile images. Returns None when the silhouette is unusable.
+    """
+    if mask is None or not is_full_body(lm) or not is_upright(lm):
+        return None
+    # Require a profile view; otherwise depth and width aren't separable here.
+    if abs(lm[11].x - lm[12].x) >= 0.08:
+        return None
+
+    mask = np.asarray(mask)
+    if mask.ndim == 3:  # ImageSegmenter returns (H, W, 1)
+        mask = mask[:, :, 0]
+    _, w = mask.shape
+
+    sh_y = (lm[11].y + lm[12].y) / 2
+    hip_y = (lm[23].y + lm[24].y) / 2
+    knee_y = (lm[25].y + lm[26].y) / 2
+    torso = abs(hip_y - sh_y)
+    if torso < 1e-4:
+        return None
+    mid_col = int(((lm[23].x + lm[24].x) / 2) * w)  # hip centerline column
+
+    waist_y = sh_y + 0.65 * (hip_y - sh_y)     # just above the hips
+    glute_y = hip_y + 0.15 * (knee_y - hip_y)  # just below the hip joint
+    thigh_y = hip_y + 0.45 * (knee_y - hip_y)  # upper thigh
+
+    waist_d = width_at(mask, waist_y, mid_col)  # in profile, this run = depth
+    glute_d = width_at(mask, glute_y, mid_col)
+    thigh_d = width_at(mask, thigh_y, mid_col)
+    if min(waist_d, glute_d, thigh_d) < 1e-4:
+        return None
+
+    return [
+        glute_d / torso,    # glute-band depth, scale-free
+        glute_d / waist_d,  # projection past the waist line — the "bubble" signal
+        glute_d / thigh_d,  # glute vs upper-thigh depth
+        waist_d / torso,    # waist depth (build context)
+    ]
+
+
 def main():
     args = sys.argv[1:]
     # `--seg` switches from the pose/skeleton vector to the silhouette/volume
@@ -284,6 +339,9 @@ def main():
                 seg_vec = build_seg_vector(lm, mask)
                 if seg_vec:
                     entry["seg"] = seg_vec
+                proj_vec = build_proj_vector(lm, mask)
+                if proj_vec:
+                    entry["proj"] = proj_vec
                 results.append(entry)
             else:
                 vec = build_vector(lm)

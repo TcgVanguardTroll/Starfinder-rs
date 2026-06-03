@@ -35,6 +35,10 @@ pub struct BodyView {
     pub view: Option<String>,
     pub pose: Option<Vec<f32>>,
     pub seg: Option<Vec<f32>>,
+    /// Posterior-projection vector — present only for `side` frames (see
+    /// `body_embed.py::build_proj_vector`); how far the lower body projects
+    /// front-to-back, which the frontal `seg` width vector can't capture.
+    pub proj: Option<Vec<f32>>,
 }
 
 /// Runs the `--seg` body pass and returns the coarse view plus both vectors per
@@ -52,6 +56,7 @@ pub fn generate_body_views(image_urls: &[String]) -> Result<Vec<BodyView>> {
                 .map(str::to_string),
             pose: extract_field(&entry, "body"),
             seg: extract_field(&entry, "seg"),
+            proj: extract_field(&entry, "proj"),
         })
         .collect())
 }
