@@ -11,3 +11,7 @@ scripts/motion_dataset.json
 scripts/backfill_stats.json
 scripts/footage_corpus.json
 scripts/seeds.json
+
+# ML model weights (kept in %LOCALAPPDATA%)
+*.pt
+*.onnx
