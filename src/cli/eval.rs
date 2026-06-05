@@ -69,6 +69,7 @@ pub(crate) fn eval_quality(db: &Database) -> anyhow::Result<()> {
     for q in &queries {
         let ref_face = face_of(db, &q.performer.name);
         let ref_meas = recommender::feature_vector(&q.performer);
+        let ref_height = recommender::performer_height_cm(&q.performer);
         let q_lc = q.performer.name.to_lowercase();
 
         let scored: Vec<(blend::ModalityScores, String)> = index
@@ -109,6 +110,10 @@ pub(crate) fn eval_quality(db: &Database) -> anyhow::Result<()> {
                     (Some(r), Some(c)) => Some(r.similarity_pct(&c)),
                     _ => None,
                 };
+                let height = match (ref_height, recommender::performer_height_cm(&e.performer)) {
+                    (Some(r), Some(c)) => Some((100.0 * (1.0 - (r - c).abs() / 40.0)).max(0.0)),
+                    _ => None,
+                };
                 (
                     blend::ModalityScores {
                         face,
@@ -117,6 +122,7 @@ pub(crate) fn eval_quality(db: &Database) -> anyhow::Result<()> {
                         proj,
                         bust,
                         meas,
+                        height,
                     },
                     e.performer.name.clone(),
                 )

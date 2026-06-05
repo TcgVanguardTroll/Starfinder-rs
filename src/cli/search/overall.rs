@@ -19,6 +19,7 @@ pub(super) async fn search_blend(
     // Reference modalities — all local, no gathering.
     let ref_face = db.get_embedding(&reference.name).ok().flatten();
     let ref_meas = recommender::feature_vector(reference);
+    let ref_height = recommender::performer_height_cm(reference);
     let ref_imgs = db.load_images(&reference.name, None)?;
     let (ref_pose, ref_seg, ref_proj, ref_bust) = if ref_imgs.is_empty() {
         (None, None, None, None)
@@ -141,6 +142,13 @@ pub(super) async fn search_blend(
                 (Some(r), Some(c)) => Some(r.similarity_pct(&c)),
                 _ => None,
             };
+            // Soft stature proximity: 100% at equal height, falling ~linearly to
+            // 0 by ~40cm apart. Rank-normalised in the blend, so it nudges
+            // similar-height candidates up without dropping anyone.
+            let height = match (ref_height, recommender::performer_height_cm(&e.performer)) {
+                (Some(r), Some(c)) => Some((100.0 * (1.0 - (r - c).abs() / 40.0)).max(0.0)),
+                _ => None,
+            };
             (
                 blend::ModalityScores {
                     face,
@@ -149,6 +157,7 @@ pub(super) async fn search_blend(
                     proj,
                     bust,
                     meas,
+                    height,
                 },
                 e.performer,
             )
@@ -202,6 +211,7 @@ pub(super) async fn search_blend(
             ("proj", m.proj),
             ("bust", m.bust),
             ("stats", m.meas),
+            ("height", m.height),
         ] {
             if let Some(v) = v {
                 tags.push_str(&format!("  {} {:.0}%", label, v));
