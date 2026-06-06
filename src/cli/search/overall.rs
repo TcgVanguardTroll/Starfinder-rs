@@ -20,6 +20,7 @@ pub(super) async fn search_blend(
     let ref_face = db.get_embedding(&reference.name).ok().flatten();
     let ref_meas = recommender::feature_vector(reference);
     let ref_height = recommender::performer_height_cm(reference);
+    let ref_bmi = recommender::performer_bmi(reference);
     let ref_imgs = db.load_images(&reference.name, None)?;
     let (ref_pose, ref_seg, ref_proj, ref_bust) = if ref_imgs.is_empty() {
         (None, None, None, None)
@@ -149,6 +150,12 @@ pub(super) async fn search_blend(
                 (Some(r), Some(c)) => Some((100.0 * (1.0 - (r - c).abs() / 40.0)).max(0.0)),
                 _ => None,
             };
+            // Build size: BMI proximity (100% at equal BMI, ~0 by 8 apart) — the
+            // fuller-vs-slimmer frame the scale-free vectors can't see.
+            let size = match (ref_bmi, recommender::performer_bmi(&e.performer)) {
+                (Some(r), Some(c)) => Some((100.0 * (1.0 - (r - c).abs() / 8.0)).max(0.0)),
+                _ => None,
+            };
             (
                 blend::ModalityScores {
                     face,
@@ -158,6 +165,7 @@ pub(super) async fn search_blend(
                     bust,
                     meas,
                     height,
+                    size,
                 },
                 e.performer,
             )
@@ -212,6 +220,7 @@ pub(super) async fn search_blend(
             ("bust", m.bust),
             ("stats", m.meas),
             ("height", m.height),
+            ("build", m.size),
         ] {
             if let Some(v) = v {
                 tags.push_str(&format!("  {} {:.0}%", label, v));

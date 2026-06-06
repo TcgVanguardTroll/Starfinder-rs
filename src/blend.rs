@@ -26,6 +26,11 @@ pub struct ModalityScores {
     /// returns bodies that wouldn't *look* like X. None when either height is
     /// unknown. (The hard `--height-tol` band is a separate, opt-in filter.)
     pub height: Option<f64>,
+    /// Build-size proximity (closeness of absolute BMI). The body vectors are
+    /// scale-free *ratios*, so they match proportions+cup but miss whether the
+    /// frame is fuller or slimmer (a 36-band vs a 32-band at the same hourglass).
+    /// This captures the absolute build humans see. None when BMI is unknown.
+    pub size: Option<f64>,
 }
 
 /// Relative importance of each modality in the blend.
@@ -37,6 +42,7 @@ pub struct Weights {
     pub bust: f64,
     pub meas: f64,
     pub height: f64,
+    pub size: f64,
 }
 
 impl Weights {
@@ -53,6 +59,7 @@ impl Weights {
             bust: 0.13,
             meas: 0.18,
             height: 0.12,
+            size: 0.13,
         }
     }
 }
@@ -75,6 +82,9 @@ impl Default for Weights {
             // Soft stature term (~10% of the blend): same-proportion-but-taller
             // candidates rank lower instead of vanishing. Hard band = --height-tol.
             height: 0.12,
+            // Build-size term: fuller-vs-slimmer frame (absolute BMI) that the
+            // scale-free body vectors miss — closes the gap with human perception.
+            size: 0.13,
         }
     }
 }
@@ -101,6 +111,7 @@ pub fn blend_scores(cands: &[ModalityScores], w: &Weights) -> Vec<f64> {
     let bust = percentiles(&cands.iter().map(|c| c.bust).collect::<Vec<_>>());
     let meas = percentiles(&cands.iter().map(|c| c.meas).collect::<Vec<_>>());
     let height = percentiles(&cands.iter().map(|c| c.height).collect::<Vec<_>>());
+    let size = percentiles(&cands.iter().map(|c| c.size).collect::<Vec<_>>());
 
     // Per candidate: the weighted percentile sum, and the total weight it covers.
     let scored: Vec<(f64, f64)> = (0..cands.len())
@@ -113,6 +124,7 @@ pub fn blend_scores(cands: &[ModalityScores], w: &Weights) -> Vec<f64> {
                 (bust[i], w.bust),
                 (meas[i], w.meas),
                 (height[i], w.height),
+                (size[i], w.size),
             ];
             let mut num = 0.0;
             let mut covered = 0.0;
@@ -174,6 +186,7 @@ mod tests {
             bust: None,
             meas,
             height: None,
+            size: None,
         }
     }
 

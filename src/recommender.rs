@@ -369,6 +369,16 @@ pub fn performer_weight_kg(p: &Performer) -> Option<f64> {
     }
 }
 
+/// Raw BMI (weight ÷ height²) — the absolute "build size" / fuller-vs-slimmer
+/// signal the scale-free body vectors miss (a 36-band fuller frame vs a 32-band
+/// slimmer one at the same proportions). None when height or weight is unknown.
+pub fn performer_bmi(p: &Performer) -> Option<f64> {
+    match (performer_height_cm(p), performer_weight_kg(p)) {
+        (Some(h), Some(w)) if h > 0.0 => Some(w / (h / 100.0).powi(2)),
+        _ => None,
+    }
+}
+
 /// Normalised height (0–1 over ~145–185cm); 0.5 (neutral) when unknown.
 fn height_f64(p: &Performer) -> f64 {
     performer_height_cm(p)
