@@ -240,6 +240,8 @@ After this, `body-search` ranks against the index **instantly**. Without an inde
 - `apply_footage.py` turns a performer's video clips into identity-gated, ML-refined body vectors — especially the **side-view projection** that stills rarely capture. `refine_frames.py` runs a WD14 tagger to drop sex-act / multi-person / close-up frames, keeping clean single-subject body displays.
 - `tag_profiles.py` writes per-performer **attribute tags** (`performer_tags` table) for trait search.
 - `fetch_iafd.py` overwrites unreliable StashDB measurements with authoritative IAFD data (name + ethnicity cross-checked, originals preserved).
+- `seg_footage.py` re-processes footage with YOLOv8 instance segmentation so body vectors read *her* isolated silhouette, unlocking the **partnered** frames (cowgirl/missionary/etc.) that `apply_footage.py` had to discard.
+- `backfill_faces.py` embeds each roster performer's profile face (InsightFace) into the `candidates` table, so the `overall` face+body blend scores **all 1008**, not just the library — `luminary embed` only covers the 35-performer library.
 
 ### Other commands
 
