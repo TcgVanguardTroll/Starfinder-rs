@@ -34,6 +34,20 @@ pub(super) fn in_band(band: Option<(f64, f64)>, p: &models::Performer) -> bool {
     }
 }
 
+/// True when the candidate's recorded hair colour contains `want`
+/// (case-insensitive substring, so `blond` matches `Blonde`/`Dark Blond`), or no
+/// hair filter is active. A candidate with no recorded hair colour is excluded
+/// while a filter is active — we can't confirm it matches.
+pub(super) fn hair_match(want: Option<&str>, p: &models::Performer) -> bool {
+    match want {
+        None => true,
+        Some(w) => p
+            .hair_color
+            .as_deref()
+            .map_or(false, |h| h.to_lowercase().contains(&w.to_lowercase())),
+    }
+}
+
 /// Find performers with a similar body, ranked against the cached index.
 ///
 /// `by` selects the lens:
@@ -51,12 +65,20 @@ pub(crate) async fn body_search(
     images: bool,
     by: &str,
     height_tol: Option<f64>,
+    hair: Option<String>,
 ) -> anyhow::Result<()> {
     let cfg = config::Config::load();
     let reference = db
         .get_performer(name)?
         .ok_or_else(|| anyhow::anyhow!("'{}' not found in your library. Add them first.", name))?;
     let band = height_band(&reference, height_tol);
+    let hair = hair.map(|h| h.to_lowercase());
+    if let Some(h) = hair.as_deref() {
+        println!(
+            "{}",
+            format!("  hair filter: {} only", h).bright_black()
+        );
+    }
     if height_tol.is_some() && band.is_none() {
         println!(
             "{}",
@@ -77,12 +99,13 @@ pub(crate) async fn body_search(
     // Needs no reference *images*, so it works even for niche performers who have
     // no clean full-body photo (where the visual lenses can't build a vector).
     if by == "stats" {
-        return search_by_measure(db, &reference, limit, images, band).await;
+        return search_by_measure(db, &reference, limit, images, band, hair.as_deref()).await;
     }
     // The default: multi-modal blend of face + frame + curves + projection + stats.
     // `body` is the same blend with face excluded — pure body-type matching.
     if by == "overall" || by == "body" {
-        return search_blend(db, &reference, limit, images, by == "body", band).await;
+        return search_blend(db, &reference, limit, images, by == "body", band, hair.as_deref())
+            .await;
     }
     // `curves` = silhouette/segmentation lens; otherwise the `frame` (skeletal
     // pose) lens. The label is reused throughout the output.
@@ -180,7 +203,10 @@ pub(crate) async fn body_search(
             .into_iter()
             .filter(|e| {
                 let n = e.performer.name.to_lowercase();
-                n != ref_lc && !known.contains(&n) && in_band(band, &e.performer)
+                n != ref_lc
+                    && !known.contains(&n)
+                    && in_band(band, &e.performer)
+                    && hair_match(hair.as_deref(), &e.performer)
             })
             .filter_map(|e| {
                 let cv = if volume { e.seg } else { e.pose }?;
@@ -202,6 +228,7 @@ pub(crate) async fn body_search(
                 p.name.to_lowercase() != ref_lc
                     && !known.contains(&p.name.to_lowercase())
                     && !p.gallery_urls.is_empty()
+                    && hair_match(hair.as_deref(), p)
             })
             .collect();
         println!(

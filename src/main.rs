@@ -240,8 +240,9 @@ async fn main() -> anyhow::Result<()> {
             images,
             by,
             height_tol,
+            hair,
         } => {
-            body_search(&db, &name, limit, images, &by, height_tol).await?;
+            body_search(&db, &name, limit, images, &by, height_tol, hair).await?;
         }
         Commands::FaceSearch {
             name,

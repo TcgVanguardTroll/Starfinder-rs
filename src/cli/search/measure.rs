@@ -11,6 +11,7 @@ pub(super) async fn search_by_measure(
     limit: usize,
     images: bool,
     band: Option<(f64, f64)>,
+    hair: Option<&str>,
 ) -> anyhow::Result<()> {
     let ref_vec = recommender::feature_vector(reference)
         .context("the reference has no usable measurements (need bust/waist/hips) to match on.")?;
@@ -39,7 +40,10 @@ pub(super) async fn search_by_measure(
         .into_iter()
         .filter(|e| {
             let n = e.performer.name.to_lowercase();
-            n != ref_lc && !known.contains(&n) && super::in_band(band, &e.performer)
+            n != ref_lc
+                && !known.contains(&n)
+                && super::in_band(band, &e.performer)
+                && super::hair_match(hair, &e.performer)
         })
         .filter_map(|e| {
             recommender::feature_vector(&e.performer)

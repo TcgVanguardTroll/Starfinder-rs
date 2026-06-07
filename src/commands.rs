@@ -242,6 +242,11 @@ pub(crate) enum Commands {
         /// (the body vectors are scale-free). E.g. `--height-tol 8`.
         #[arg(long = "height-tol")]
         height_tol: Option<f64>,
+        /// Only match performers whose recorded hair colour contains this word
+        /// (case-insensitive), so results share the reference's hair. Matches as a
+        /// substring, so `--hair blond` also catches "Dark Blonde". E.g. `--hair blond`.
+        #[arg(long)]
+        hair: Option<String>,
     },
     /// Search for performers who look like someone (by face)
     FaceSearch {

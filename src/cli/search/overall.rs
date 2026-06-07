@@ -15,9 +15,11 @@ pub(super) async fn search_blend(
     images: bool,
     body_only: bool,
     band: Option<(f64, f64)>,
+    hair: Option<&str>,
 ) -> anyhow::Result<()> {
-    // Reference modalities — all local, no gathering.
-    let ref_face = db.get_embedding(&reference.name).ok().flatten();
+    // Reference modalities — all local, no gathering. `get_embedding_any` so a
+    // roster/footage-seeded face (in `candidates`) resolves too, not just library.
+    let ref_face = db.get_embedding_any(&reference.name).ok().flatten();
     let ref_meas = recommender::feature_vector(reference);
     let ref_height = recommender::performer_height_cm(reference);
     let ref_bmi = recommender::performer_bmi(reference);
@@ -103,7 +105,10 @@ pub(super) async fn search_blend(
         .into_iter()
         .filter(|e| {
             let n = e.performer.name.to_lowercase();
-            n != ref_lc && !known.contains(&n) && super::in_band(band, &e.performer)
+            n != ref_lc
+                && !known.contains(&n)
+                && super::in_band(band, &e.performer)
+                && super::hair_match(hair, &e.performer)
         })
         .map(|e| {
             let face = match (

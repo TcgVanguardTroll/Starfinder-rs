@@ -200,7 +200,7 @@ luminary face-search "Naughty Alysha" [--limit 10] [--images]
 ```powershell
 pip install mediapipe   # one-time
 
-luminary body-search "Dee Siren" [--by overall|body|frame|curves|stats] [--height-tol 8] [--limit 10]
+luminary body-search "Dee Siren" [--by overall|body|frame|curves|stats] [--height-tol 8] [--hair blond] [--limit 10]
 ```
 
 `body-search` ranks against the cached index. Pick the **lens** with `--by`:
@@ -215,7 +215,7 @@ luminary body-search "Dee Siren" [--by overall|body|frame|curves|stats] [--heigh
 
 Each modality is **rank-normalised** before blending so they stay comparable, and the result shows a `%` per modality (`face / frame / curves / proj / bust / stats / height / build`).
 
-**Why `height` and `build`:** the visual vectors are **scale-free ratios**, so a tall or fuller-framed performer with the same proportions would score as high as a short/slim one. Two soft terms fix this — `height` (closeness of stature) and `build` (closeness of BMI — fuller vs slimmer frame) — so "build like X" returns bodies that actually *look* like X. For a hard constraint, **`--height-tol N`** drops candidates outside the reference's height ± N cm.
+**Why `height` and `build`:** the visual vectors are **scale-free ratios**, so a tall or fuller-framed performer with the same proportions would score as high as a short/slim one. Two soft terms fix this — `height` (closeness of stature) and `build` (closeness of BMI — fuller vs slimmer frame) — so "build like X" returns bodies that actually *look* like X. For a hard constraint, **`--height-tol N`** drops candidates outside the reference's height ± N cm. **`--hair <colour>`** filters to a recorded hair colour (case-insensitive substring, so `--hair blond` also catches "Dark Blonde") — applies to every lens.
 
 The visual lenses build the reference's vector from a combined, **quality-gated** image pool (pornpics + ThePornDB scene stills + StashDB, plus any ingested footage) — the gate rejects headshots, crops, and non-standing poses so a bad image can't fabricate a build.
 
