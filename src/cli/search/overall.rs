@@ -228,46 +228,57 @@ pub(super) async fn search_blend(
         .bright_cyan()
         .bold()
     );
+    // Legend: the bar is the headline blend; the indented row below each result
+    // breaks it into the eight modalities, grouped face │ body │ build-&-fit.
+    println!(
+        "{}",
+        "  bar = blend 0–100      breakdown below: \
+         face │ frame curves proj bust │ stats height build  (· = n/a)"
+            .bright_black()
+    );
     println!();
+    let sep = "│".bright_black().to_string();
+    let field =
+        |label: &str, v: Option<f64>| format!("{} {}", label.bright_black(), super::modality_cell(v));
     let img_cache = if images { ImageCache::new().ok() } else { None };
     for (i, (score, m, p)) in ranked.iter().enumerate() {
-        let mut tags = String::new();
-        for (label, v) in [
-            ("face", m.face),
-            ("frame", m.build),
-            ("curves", m.volume),
-            ("proj", m.proj),
-            ("bust", m.bust),
-            ("stats", m.meas),
-            ("height", m.height),
-            ("build", m.size),
-        ] {
-            if let Some(v) = v {
-                tags.push_str(&format!("  {} {:.0}%", label, v));
-            }
-        }
         let ht = recommender::performer_height_cm(p)
-            .map(|h| format!(", {:.0}cm", h))
+            .map(|h| format!(" · {:.0}cm", h))
             .unwrap_or_default();
+        let look = format!(
+            "{}{}{}",
+            p.ethnicity.as_deref().unwrap_or("?"),
+            p.measurements
+                .as_ref()
+                .map(|m| format!(" · {}", m))
+                .unwrap_or_default(),
+            ht,
+        );
+        // Headline row: rank, name (aligned), blend bar + score, then the look.
         println!(
-            "{}. {} {}  {}{}",
+            "  {:>2}  {}  {} {}   {}",
             (i + 1).to_string().bright_black(),
-            p.name.bright_white().bold(),
-            format!(
-                "({}{}{})",
-                p.ethnicity.as_deref().unwrap_or("?"),
-                p.measurements
-                    .as_ref()
-                    .map(|m| format!(", {}", m))
-                    .unwrap_or_default(),
-                ht,
-            )
-            .bright_black(),
-            format!("blend {:.0}", score).bright_cyan().bold(),
-            tags.bright_black(),
+            super::pad_name(&p.name, 20).bright_white().bold(),
+            super::score_bar(*score, 10),
+            format!("{:>3.0}", score).bright_cyan().bold(),
+            look.bright_black(),
+        );
+        // Breakdown row: the eight modalities, grouped and column-aligned.
+        println!(
+            "      {}  {}  {} {} {} {}  {}  {} {} {}",
+            field("face", m.face),
+            sep,
+            field("frame", m.build),
+            field("curves", m.volume),
+            field("proj", m.proj),
+            field("bust", m.bust),
+            sep,
+            field("stats", m.meas),
+            field("height", m.height),
+            field("build", m.size),
         );
         if let Some(url) = &p.source_url {
-            println!("   {} {}", "↳".bright_black(), url.blue().underline());
+            println!("      {} {}", "↳".bright_black(), url.blue().underline());
         }
         if let Some(cache) = &img_cache {
             if let Some(url) = p.profile_image_url.as_deref() {

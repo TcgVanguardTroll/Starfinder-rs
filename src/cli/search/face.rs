@@ -97,14 +97,14 @@ pub(crate) async fn face_search(
         .map(|(e, p)| (embedder::cosine_similarity(&ref_emb, &e), p))
         .collect();
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    let corpus_size = scored.len();
     scored.truncate(limit);
 
     println!(
         "{}",
         format!(
             "Faces most like {} (from a corpus of {} candidates):",
-            reference.name,
-            scored.len()
+            reference.name, corpus_size
         )
         .bright_cyan()
         .bold()
@@ -115,32 +115,34 @@ pub(crate) async fn face_search(
     for (i, (sim, p)) in scored.iter().enumerate() {
         let age_str = p
             .age
-            .map(|a| format!(", {}", recommender::age_bucket(a)))
+            .map(|a| format!(" · {}", recommender::age_bucket(a)))
             .unwrap_or_default();
         let body = if p.body_type.is_empty() {
             "?"
         } else {
             &p.body_type
         };
+        let look = format!(
+            "{} · {}{}{}",
+            body,
+            p.ethnicity.as_deref().unwrap_or("?"),
+            p.hair_color
+                .as_ref()
+                .map(|h| format!(" · {}", h))
+                .unwrap_or_default(),
+            age_str,
+        );
+        let pct = embedder::similarity_pct(*sim) as f64;
         println!(
-            "{}. {} {}  {}",
+            "  {:>2}  {}  {} {}   {}",
             (i + 1).to_string().bright_black(),
-            p.name.bright_white().bold(),
-            format!(
-                "({}, {}{}{})",
-                body,
-                p.ethnicity.as_deref().unwrap_or("?"),
-                p.hair_color
-                    .as_ref()
-                    .map(|h| format!(", {}", h))
-                    .unwrap_or_default(),
-                age_str,
-            )
-            .bright_black(),
-            format!("face {:.0}%", embedder::similarity_pct(*sim)).bright_cyan(),
+            super::pad_name(&p.name, 20).bright_white().bold(),
+            super::score_bar(pct, 10),
+            format!("{pct:>3.0}").bright_cyan().bold(),
+            look.bright_black(),
         );
         if let Some(url) = &p.source_url {
-            println!("   {} {}", "↳".bright_black(), url.blue().underline());
+            println!("      {} {}", "↳".bright_black(), url.blue().underline());
         }
         if let Some(cache) = &img_cache {
             if let Some(url) = p.face_url.as_deref().or(p.profile_image_url.as_deref()) {

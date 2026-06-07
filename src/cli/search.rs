@@ -48,6 +48,58 @@ pub(super) fn hair_match(want: Option<&str>, p: &models::Performer) -> bool {
     }
 }
 
+// ── Shared result-rendering helpers (used by every body/face lens) ───────────
+
+/// A fixed-width colour bar for a 0–100 score, with partial-block glyphs for
+/// sub-cell precision. `width` cells = 100%. Green ≥80, yellow ≥60, else red — so
+/// a glance down the column reads the match strength without parsing numbers.
+pub(super) fn score_bar(score: f64, width: usize) -> String {
+    const EIGHTHS: [&str; 9] = [" ", "▏", "▎", "▍", "▌", "▋", "▊", "▉", "█"];
+    let s = score.clamp(0.0, 100.0);
+    let eighths = (s / 100.0 * width as f64 * 8.0).round() as usize;
+    let full = (eighths / 8).min(width);
+    let rem = eighths % 8;
+    let mut bar = "█".repeat(full);
+    let mut cells = full;
+    if rem > 0 && cells < width {
+        bar.push_str(EIGHTHS[rem]);
+        cells += 1;
+    }
+    bar.push_str(&" ".repeat(width.saturating_sub(cells)));
+    let c = if s >= 80.0 {
+        bar.green()
+    } else if s >= 60.0 {
+        bar.yellow()
+    } else {
+        bar.red()
+    };
+    c.to_string()
+}
+
+/// Truncate (with …) or right-pad a name to a fixed display width so the columns
+/// after it line up down the list. Returns a plain string — colour it afterwards
+/// (padding a coloured string would count the ANSI codes and misalign).
+pub(super) fn pad_name(name: &str, width: usize) -> String {
+    let chars: Vec<char> = name.chars().collect();
+    if chars.len() > width {
+        let mut s: String = chars[..width.saturating_sub(1)].iter().collect();
+        s.push('…');
+        s
+    } else {
+        format!("{name:<width$}")
+    }
+}
+
+/// One modality value as a fixed-width 3-char cell — the rounded score, or a dim
+/// `·` when that modality is absent for this candidate. Keeps the breakdown row's
+/// columns aligned regardless of which modalities are present.
+pub(super) fn modality_cell(v: Option<f64>) -> String {
+    match v {
+        Some(x) => format!("{x:>3.0}"),
+        None => format!("{:>3}", "·").bright_black().to_string(),
+    }
+}
+
 /// Find performers with a similar body, ranked against the cached index.
 ///
 /// `by` selects the lens:

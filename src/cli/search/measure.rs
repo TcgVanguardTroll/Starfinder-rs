@@ -76,26 +76,27 @@ pub(super) async fn search_by_measure(
     let img_cache = if images { ImageCache::new().ok() } else { None };
     for (i, (pct, p)) in scored.iter().enumerate() {
         let ht = recommender::performer_height_cm(p)
-            .map(|h| format!(", {:.0}cm", h))
+            .map(|h| format!(" · {:.0}cm", h))
             .unwrap_or_default();
+        let look = format!(
+            "{}{}{}",
+            p.ethnicity.as_deref().unwrap_or("?"),
+            p.measurements
+                .as_ref()
+                .map(|m| format!(" · {}", m))
+                .unwrap_or_default(),
+            ht,
+        );
         println!(
-            "{}. {} {}  {}",
+            "  {:>2}  {}  {} {}   {}",
             (i + 1).to_string().bright_black(),
-            p.name.bright_white().bold(),
-            format!(
-                "({}{}{})",
-                p.ethnicity.as_deref().unwrap_or("?"),
-                p.measurements
-                    .as_ref()
-                    .map(|m| format!(", {}", m))
-                    .unwrap_or_default(),
-                ht,
-            )
-            .bright_black(),
-            format!("build {:.0}%", pct).bright_cyan(),
+            super::pad_name(&p.name, 20).bright_white().bold(),
+            super::score_bar(*pct, 10),
+            format!("{:>3.0}", pct).bright_cyan().bold(),
+            look.bright_black(),
         );
         if let Some(url) = &p.source_url {
-            println!("   {} {}", "↳".bright_black(), url.blue().underline());
+            println!("      {} {}", "↳".bright_black(), url.blue().underline());
         }
         if let Some(cache) = &img_cache {
             if let Some(url) = p.profile_image_url.as_deref() {
