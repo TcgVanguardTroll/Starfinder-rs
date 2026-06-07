@@ -62,6 +62,25 @@ impl Weights {
             size: 0.13,
         }
     }
+
+    /// "Closest-looking actress" weights: face dominates so the ranking is led by
+    /// the *look* (identity/facial geometry), but every body modality stays in —
+    /// so it's "looks like her AND built like her", not pure face-search. Stature
+    /// is weighted a touch higher too, since two people of very different heights
+    /// rarely read as look-alikes. Pair with `--hair`/`--height-tol` to lock the
+    /// obvious shared traits. Face ≈ 35% of total weight here vs ≈ 26% in default.
+    pub fn lookalike() -> Self {
+        Weights {
+            face: 0.50,
+            build: 0.15,
+            volume: 0.15,
+            proj: 0.12,
+            bust: 0.10,
+            meas: 0.10,
+            height: 0.16,
+            size: 0.12,
+        }
+    }
 }
 
 impl Default for Weights {

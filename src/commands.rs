@@ -229,12 +229,13 @@ pub(crate) enum Commands {
         #[arg(long, default_value_t = false)]
         images: bool,
         /// Which lens to match by:
-        ///   overall = multi-modal fusion of face + frame + curves + projection + stats (default)
-        ///   body    = same fusion but face EXCLUDED — pure body-type match
-        ///   frame   = skeletal proportions (shoulder/hip/leg), from pose
-        ///   curves  = silhouette fullness (butt/thigh), from segmentation
-        ///   stats   = recorded WHR/hips/cup (no images; works for niche refs)
-        #[arg(long = "by", default_value = "overall", value_parser = ["overall", "body", "frame", "curves", "stats"])]
+        ///   overall   = multi-modal fusion of face + frame + curves + projection + stats (default)
+        ///   lookalike = same fusion but FACE-LED — closest-looking actress (looks like + built like)
+        ///   body      = same fusion but face EXCLUDED — pure body-type match
+        ///   frame     = skeletal proportions (shoulder/hip/leg), from pose
+        ///   curves    = silhouette fullness (butt/thigh), from segmentation
+        ///   stats     = recorded WHR/hips/cup (no images; works for niche refs)
+        #[arg(long = "by", default_value = "overall", value_parser = ["overall", "lookalike", "body", "frame", "curves", "stats"])]
         by: String,
         /// Only match performers within ± this many cm of the reference's height,
         /// so results share the same *stature*, not just proportions. Without it,

@@ -13,10 +13,21 @@ pub(super) async fn search_blend(
     reference: &models::Performer,
     limit: usize,
     images: bool,
-    body_only: bool,
+    by: &str,
     band: Option<(f64, f64)>,
     hair: Option<&str>,
 ) -> anyhow::Result<()> {
+    // `by` selects the weight profile: "body" excludes face (pure body type),
+    // "lookalike" lets face dominate (closest-looking), else the balanced default.
+    let body_only = by == "body";
+    let lookalike = by == "lookalike";
+    let mode_label = if body_only {
+        "BODY-TYPE"
+    } else if lookalike {
+        "look-alike (face-led)"
+    } else {
+        "overall"
+    };
     // Reference modalities — all local, no gathering. `get_embedding_any` so a
     // roster/footage-seeded face (in `candidates`) resolves too, not just library.
     let ref_face = db.get_embedding_any(&reference.name).ok().flatten();
@@ -46,7 +57,7 @@ pub(super) async fn search_blend(
         "{}",
         format!(
             "Blending candidates by {} similarity to {}:",
-            if body_only { "BODY-TYPE" } else { "overall" },
+            mode_label,
             reference.name
         )
         .bright_cyan()
@@ -180,6 +191,8 @@ pub(super) async fn search_blend(
     let raw: Vec<blend::ModalityScores> = candidates.iter().map(|(m, _)| m.clone()).collect();
     let weights = if body_only {
         blend::Weights::body_only()
+    } else if lookalike {
+        blend::Weights::lookalike()
     } else {
         blend::Weights::default()
     };
@@ -205,6 +218,8 @@ pub(super) async fn search_blend(
             ranked.len(),
             if body_only {
                 "body-type match"
+            } else if lookalike {
+                "look-alike (face-led) blend"
             } else {
                 "multi-modal blend"
             },

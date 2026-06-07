@@ -200,7 +200,7 @@ luminary face-search "Naughty Alysha" [--limit 10] [--images]
 ```powershell
 pip install mediapipe   # one-time
 
-luminary body-search "Dee Siren" [--by overall|body|frame|curves|stats] [--height-tol 8] [--hair blond] [--limit 10]
+luminary body-search "Dee Siren" [--by overall|lookalike|body|frame|curves|stats] [--height-tol 8] [--hair blond] [--limit 10]
 ```
 
 `body-search` ranks against the cached index. Pick the **lens** with `--by`:
@@ -208,6 +208,7 @@ luminary body-search "Dee Siren" [--by overall|body|frame|curves|stats] [--heigh
 | `--by` | Signal |
 |--------|--------|
 | `overall` *(default)* | multi-modal blend: **face + frame + curves + proj + bust + stats + height + build** |
+| `lookalike` | the same blend but **face-led** (face ≈35% of weight, stature up) — *closest-looking actress*: looks like **and** built like |
 | `body` | the same blend with **face excluded** — pure body-type match |
 | `frame` | skeletal proportions (shoulder/hip/leg), from MediaPipe **pose** |
 | `curves` | butt/thigh **fullness** the skeleton can't see, from MediaPipe **segmentation** |

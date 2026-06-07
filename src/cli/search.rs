@@ -102,10 +102,10 @@ pub(crate) async fn body_search(
         return search_by_measure(db, &reference, limit, images, band, hair.as_deref()).await;
     }
     // The default: multi-modal blend of face + frame + curves + projection + stats.
-    // `body` is the same blend with face excluded — pure body-type matching.
-    if by == "overall" || by == "body" {
-        return search_blend(db, &reference, limit, images, by == "body", band, hair.as_deref())
-            .await;
+    // `body` excludes face (pure body type); `lookalike` lets face dominate
+    // (closest-looking actress). All three share the blend path.
+    if by == "overall" || by == "body" || by == "lookalike" {
+        return search_blend(db, &reference, limit, images, by, band, hair.as_deref()).await;
     }
     // `curves` = silhouette/segmentation lens; otherwise the `frame` (skeletal
     // pose) lens. The label is reused throughout the output.
