@@ -86,7 +86,9 @@ impl Weights {
             bust: 0.10,
             meas: 0.10,
             height: 0.16,
-            size: 0.12,
+            // Mild build/BMI bump (was 0.12) so look-alikes are same-size too,
+            // while face still clearly leads.
+            size: 0.18,
         }
     }
 }
@@ -111,7 +113,9 @@ impl Default for Weights {
             height: 0.12,
             // Build-size term: fuller-vs-slimmer frame (absolute BMI) that the
             // scale-free body vectors miss — closes the gap with human perception.
-            size: 0.13,
+            // Bumped above its original 0.13 so every search leans toward
+            // genuinely same-*size* matches (body_only leads with it at 0.30).
+            size: 0.19,
         }
     }
 }
