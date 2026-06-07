@@ -50,16 +50,24 @@ impl Weights {
     /// how similar the *body* is — skeletal frame, silhouette fullness, butt
     /// projection, bust, and recorded measurements. For "find an extremely
     /// similar body type" rather than "looks like + built like" (the default).
+    ///
+    /// `size` (absolute build/BMI) is the heaviest term here: the visual `volume`
+    /// (curves) and `build` (frame) vectors are scale-free *ratios*, so a slim
+    /// performer with the same hourglass ranks as high as a full-figured one. By
+    /// leading with absolute fullness we return bodies that look the same *size*,
+    /// not just the same shape — a slim-but-same-proportions match drops below a
+    /// genuinely full-figured one. `bust` (absolute chest projection) is raised
+    /// for the same reason.
     pub fn body_only() -> Self {
         Weights {
             face: 0.0,
-            build: 0.22,
-            volume: 0.22,
-            proj: 0.18,
-            bust: 0.13,
+            build: 0.18,
+            volume: 0.18,
+            proj: 0.15,
+            bust: 0.16,
             meas: 0.18,
             height: 0.12,
-            size: 0.13,
+            size: 0.30,
         }
     }
 
