@@ -13,7 +13,6 @@ ToS note: scraping IAFD is against their terms — personal-tool use, your call.
 """
 import argparse
 import json
-import os
 import re
 import sqlite3
 import time

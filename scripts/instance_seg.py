@@ -32,7 +32,6 @@ ID_THRESHOLD = 0.3
 
 def load_models():
     from ultralytics import YOLO
-    import mediapipe as mp
     from mediapipe.tasks import python as mp_python
     from mediapipe.tasks.python import vision
 
