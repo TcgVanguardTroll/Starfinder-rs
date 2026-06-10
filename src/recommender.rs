@@ -443,6 +443,7 @@ const ETHNICITIES: &[&str] = &[
 const HAIRS: &[&str] = &[
     "Auburn", "Bald", "Black", "Blonde", "Brunette", "Grey", "Red", "Various", "White",
 ];
+const EYES: &[&str] = &["Blue", "Brown", "Green", "Grey", "Hazel", "Red"];
 
 pub fn cluster_vector(p: &Performer) -> Vec<f32> {
     let whr = performer_whr(p).unwrap_or(0.72);
@@ -543,28 +544,12 @@ pub fn feature_vector(p: &Performer) -> Option<FeatureVec> {
     let bmi = bmi_f64(p);
     let inv_whr = (1.0 - whr.clamp(0.5, 1.0) / 0.5).clamp(0.0, 1.0);
 
-    let eth = str_to_id(
-        p.ethnicity.as_deref(),
-        &[
-            "Asian",
-            "Black",
-            "Caucasian",
-            "Indian",
-            "Latin",
-            "Middle Eastern",
-            "Mixed",
-        ],
-    );
-    let hair = str_to_id(
-        p.hair_color.as_deref(),
-        &[
-            "Auburn", "Bald", "Black", "Blonde", "Brunette", "Grey", "Red", "White",
-        ],
-    );
-    let eye = str_to_id(
-        p.eye_color.as_deref(),
-        &["Blue", "Brown", "Green", "Grey", "Hazel", "Red"],
-    );
+    // Shared taxonomies — these previously re-declared the lists inline and
+    // had drifted from the cluster_vector ones (missing "Various" hair), so a
+    // performer's hair id differed between clustering and k-NN.
+    let eth = str_to_id(p.ethnicity.as_deref(), ETHNICITIES);
+    let hair = str_to_id(p.hair_color.as_deref(), HAIRS);
+    let eye = str_to_id(p.eye_color.as_deref(), EYES);
 
     // Weights: WHR and hips dominate; height/weight capture overall stature
     // (e.g. a "shortstack" — short + curvy — vs the same measurements on a

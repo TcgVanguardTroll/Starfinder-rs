@@ -174,45 +174,47 @@ def scan_clip(path, pose, seg, face_app, seed, every_s, max_samples):
     cap = cv2.VideoCapture(longpath(path))
     if not cap.isOpened():
         return [], 0, 0, "open-fail", 0.0
-    times, dur_min = sample_times(cap, every_s, max_samples)
-    frames, n_match, n_other, sidx = [], 0, 0, 0
-    if times is not None:
-        # Seek-based: O(samples), independent of clip length.
-        for ms in times:
-            cap.set(cv2.CAP_PROP_POS_MSEC, ms)
-            ok, frame = cap.read()
-            if not ok:
-                continue
-            sidx += 1
-            entry, verdict, _ = process_frame(frame, pose, seg, face_app, seed)
-            if verdict == "match":
-                n_match += 1
-            elif verdict == "other":
-                n_other += 1
-            if entry:
-                entry["idx"] = sidx
-                frames.append(entry)
-    else:
-        # Unknown duration: read sequentially, every ~SAMPLE_EVERY_S*30 frames.
-        stride, i = max(1, int(every_s * 30)), 0
-        while len(frames) < max_samples:
-            if not cap.grab():
-                break
-            i += 1
-            if i % stride:
-                continue
-            ok, frame = cap.retrieve()
-            if not ok:
-                break
-            entry, verdict, _ = process_frame(frame, pose, seg, face_app, seed)
-            if verdict == "match":
-                n_match += 1
-            elif verdict == "other":
-                n_other += 1
-            if entry:
-                entry["idx"] = i
-                frames.append(entry)
-    cap.release()
+    try:  # release the capture even if a frame raises (handle leak otherwise)
+        times, dur_min = sample_times(cap, every_s, max_samples)
+        frames, n_match, n_other, sidx = [], 0, 0, 0
+        if times is not None:
+            # Seek-based: O(samples), independent of clip length.
+            for ms in times:
+                cap.set(cv2.CAP_PROP_POS_MSEC, ms)
+                ok, frame = cap.read()
+                if not ok:
+                    continue
+                sidx += 1
+                entry, verdict, _ = process_frame(frame, pose, seg, face_app, seed)
+                if verdict == "match":
+                    n_match += 1
+                elif verdict == "other":
+                    n_other += 1
+                if entry:
+                    entry["idx"] = sidx
+                    frames.append(entry)
+        else:
+            # Unknown duration: read sequentially, every ~SAMPLE_EVERY_S*30 frames.
+            stride, i = max(1, int(every_s * 30)), 0
+            while len(frames) < max_samples:
+                if not cap.grab():
+                    break
+                i += 1
+                if i % stride:
+                    continue
+                ok, frame = cap.retrieve()
+                if not ok:
+                    break
+                entry, verdict, _ = process_frame(frame, pose, seg, face_app, seed)
+                if verdict == "match":
+                    n_match += 1
+                elif verdict == "other":
+                    n_other += 1
+                if entry:
+                    entry["idx"] = i
+                    frames.append(entry)
+    finally:
+        cap.release()
     return frames, n_match, n_other, "ok", dur_min
 
 

@@ -1,0 +1,68 @@
+name: Claude Auto Review
+
+# The "review" stage of the build -> review -> repair loop: every PR push gets
+# an automated code review posted as inline + summary comments. Requires the
+# ANTHROPIC_API_KEY repo secret (Settings -> Secrets -> Actions); until that
+# secret exists the job skips cleanly instead of failing the PR.
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+  actions: read # let the reviewer see CI results
+  id-token: write
+
+# A force-push mid-review should cancel the stale review, not double-post.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    if: ${{ !github.event.pull_request.draft }}
+    steps:
+      - name: Check for API key
+        id: key
+        run: echo "present=${{ secrets.ANTHROPIC_API_KEY != '' }}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: steps.key.outputs.present == 'true'
+
+      - uses: anthropics/claude-code-action@v1
+        if: steps.key.outputs.present == 'true'
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            You are reviewing a PR for Luminary: a Rust CLI recommendation
+            engine (SQLite-backed) with Python ML sidecars (scripts/,
+            body_embed.py) for face/body embeddings.
+
+            CI already enforces cargo fmt, clippy -D warnings, cargo test,
+            py_compile, and ruff pyflakes — do NOT re-report anything those
+            gates catch. Focus on what they can't:
+
+            - correctness bugs: panics on bad input, edge cases, wrong math
+              in the scoring/blend/recommender code
+            - silent failure paths: swallowed errors, unwrap_or_default
+              masking a real failure as "no results"
+            - resource lifecycles in the Python sidecars (cv2.VideoCapture,
+              sqlite connections — release/close on ALL paths)
+            - drift between duplicated taxonomies/constants (hair/ethnicity/
+              eye lists, modality weights)
+            - changes that would corrupt or invalidate cached embeddings or
+              body_index rows
+
+            Report every issue you find, including ones you are uncertain
+            about — include a confidence level and severity for each so the
+            author can filter; do not self-censor low-confidence findings.
+            Post line-specific findings as inline comments and finish with
+            one short summary comment giving an overall verdict.
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*)"

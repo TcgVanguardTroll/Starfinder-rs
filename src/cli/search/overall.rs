@@ -57,8 +57,7 @@ pub(super) async fn search_blend(
         "{}",
         format!(
             "Blending candidates by {} similarity to {}:",
-            mode_label,
-            reference.name
+            mode_label, reference.name
         )
         .bright_cyan()
         .bold()
@@ -238,8 +237,9 @@ pub(super) async fn search_blend(
     );
     println!();
     let sep = "│".bright_black().to_string();
-    let field =
-        |label: &str, v: Option<f64>| format!("{} {}", label.bright_black(), super::modality_cell(v));
+    let field = |label: &str, v: Option<f64>| {
+        format!("{} {}", label.bright_black(), super::modality_cell(v))
+    };
     let img_cache = if images { ImageCache::new().ok() } else { None };
     for (i, (score, m, p)) in ranked.iter().enumerate() {
         let ht = recommender::performer_height_cm(p)

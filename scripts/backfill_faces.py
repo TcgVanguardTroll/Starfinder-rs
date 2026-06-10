@@ -15,7 +15,6 @@ import tempfile
 import urllib.request
 
 import cv2
-import numpy as np
 
 from _paths import db_path  # cross-platform DB location
 DB = db_path()

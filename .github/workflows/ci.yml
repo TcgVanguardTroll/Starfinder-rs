@@ -4,6 +4,11 @@ on:
   push:
     branches: [ master ]
   pull_request:
+  # Weekly drift check: the toolchain is installed as @stable, so new clippy
+  # lints / rustfmt rules can break CI with zero pushes (it happened — see
+  # PR #1). Run Mondays so the breakage surfaces on master, not mid-PR.
+  schedule:
+    - cron: "0 9 * * 1"
 
 env:
   CARGO_TERM_COLOR: always
@@ -37,3 +42,28 @@ jobs:
 
       - name: Test
         run: cargo test --all
+
+  python:
+    name: Python sidecars
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      # Syntax check every sidecar so a broken script can't slip in. The ML
+      # deps (cv2, mediapipe, insightface…) aren't installed here, so we only
+      # byte-compile rather than import.
+      - name: Byte-compile
+        run: python -m py_compile *.py scripts/*.py
+
+      # Pyflakes-level lint only (F rules): undefined names, unused imports —
+      # real bugs, not style. Keeps the gate signal high without churn.
+      - name: Ruff (pyflakes)
+        run: ruff check --select F *.py scripts/*.py

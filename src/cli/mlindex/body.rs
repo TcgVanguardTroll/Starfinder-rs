@@ -109,7 +109,13 @@ pub(crate) async fn build_index(
             ranges.push((start, flat.len()));
         }
 
-        let all = embedder::generate_dual_embeddings(&flat).unwrap_or_default();
+        // Propagate sidecar failure instead of writing empty index rows for
+        // the whole chunk (which would mark these performers "indexed" with
+        // no vectors and silently exclude them from every future search).
+        let all = embedder::generate_dual_embeddings(&flat).context(
+            "Body-embedding sidecar failed for this chunk (transient — model \
+             load or image download). Re-run 'index' to resume.",
+        )?;
 
         for (p, (s, e)) in group.iter().zip(ranges) {
             let slice = all.get(s..e).unwrap_or(&[]);

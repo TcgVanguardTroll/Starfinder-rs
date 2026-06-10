@@ -14,7 +14,6 @@ import sys
 
 import cv2
 import mediapipe as mp
-import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import body_embed as be  # noqa: E402

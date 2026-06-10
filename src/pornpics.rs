@@ -29,13 +29,8 @@ impl Default for PornpicsClient {
 
 impl PornpicsClient {
     pub fn new() -> Self {
-        // A browser User-Agent — the site serves an empty page to non-browser
-        // agents.
-        let client = reqwest::Client::builder()
-            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .unwrap();
+        // Browser UA — the site serves an empty page to non-browser agents.
+        let client = crate::http::client(crate::http::BROWSER_UA);
         PornpicsClient { client }
     }
 

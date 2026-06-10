@@ -9,12 +9,7 @@ pub struct Scraper {
 
 impl Scraper {
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .unwrap();
-
+        let client = crate::http::client(crate::http::BROWSER_UA);
         Scraper { client }
     }
 

@@ -15,23 +15,26 @@ graph TB
     end
 
     subgraph Binary["luminary binary (src/main.rs)"]
-        CMD["Command handlers<br/>add · find · recommend · similar<br/>face-search · warm · embed · config"]
+        CMD["Command handlers<br/>add · find · recommend · similar · face-search<br/>index · ingest · aggregate · body-search<br/>profile · clusters · embed · warm · config"]
     end
 
     subgraph Lib["luminary library crate (src/lib.rs)"]
         MODELS["models<br/>Performer, SearchFilters"]
-        DB["database<br/>SQLite access"]
+        DB["database<br/>SQLite + corpus"]
         TPDB["tpdb<br/>ThePornDB REST client"]
         STASH["stashdb<br/>StashDB GraphQL client"]
-        REC["recommender<br/>tree · IDF · WHR · k-NN"]
-        EMB["embedder<br/>ArcFace via sidecar"]
-        CFG["config<br/>gender filter · API keys"]
+        SRCS["pornpics · pichunter<br/>full-body galleries"]
+        REC["recommender<br/>tree · IDF · WHR · k-means · k-NN"]
+        EMB["embedder<br/>ArcFace + body vectors"]
+        BLEND["blend<br/>multi-modal fusion"]
+        CFG["config<br/>gender filter · keys · paths"]
+        HTTP["http<br/>shared client"]
         IMG["image_cache"]
         SCR["scraper<br/>(fallback)"]
     end
 
-    subgraph Local["Local storage (%LOCALAPPDATA%/luminary)"]
-        SQLITE[("SQLite<br/>performers · candidates<br/>aliases · embeddings")]
+    subgraph Local["Local storage (OS data dir)"]
+        SQLITE[("SQLite<br/>performers · candidates · aliases<br/>body_index · images")]
         IMGCACHE[("image cache")]
         CONFIG[("config.json")]
     end
@@ -39,16 +42,19 @@ graph TB
     subgraph External["External services"]
         TPDBAPI["api.theporndb.net<br/>(REST, authorized key)"]
         STASHAPI["stashdb.org/graphql<br/>(optional, ApiKey)"]
-        PY["face_embed.py<br/>InsightFace + ONNX<br/>(local subprocess)"]
+        WEBIMG["pornpics · pichunter<br/>(keyless image galleries)"]
+        PY["face_embed.py · body_embed.py<br/>InsightFace + MediaPipe<br/>(local subprocess)"]
     end
 
     CLI --> CMD
-    CMD --> MODELS & DB & TPDB & STASH & REC & EMB & CFG & IMG & SCR
+    CMD --> MODELS & DB & TPDB & STASH & SRCS & REC & EMB & BLEND & CFG & IMG & SCR
+    TPDB & STASH & SRCS & SCR --> HTTP
     DB --> SQLITE
     IMG --> IMGCACHE
     CFG --> CONFIG
     TPDB --> TPDBAPI
     STASH --> STASHAPI
+    SRCS --> WEBIMG
     EMB --> PY
     SCR -.fallback.-> TPDBAPI
 ```
@@ -85,9 +91,31 @@ erDiagram
         string alias PK
         string canonical FK
     }
+    BODY_INDEX {
+        string name PK
+        string data "full JSON snapshot"
+        blob pose_vec "skeletal frame centroid"
+        blob seg_vec "silhouette/curves centroid"
+        blob proj_vec "side-view projection centroid"
+        blob bust_vec "bust shape centroid"
+        int n_frames
+    }
+    IMAGES {
+        string performer PK "(performer,url)"
+        string url PK
+        string source "tpdb · stashdb · pornpics · footage · manual"
+        string view "front · rear · side · unknown"
+        real quality "0–1"
+        blob pose_vec
+        blob seg_vec
+        blob face_vec
+        blob proj_vec
+        blob bust_vec
+    }
 
     PERFORMERS ||--o{ ALIASES : "resolves to"
     PERFORMERS }o--o{ CANDIDATES : "discovered from"
+    BODY_INDEX ||--o{ IMAGES : "centroids aggregated from"
 ```
 
 - **performers** — your liked library; each row carries a cached centroid embedding.
@@ -95,6 +123,11 @@ erDiagram
   `find` / `warm`, reused for instant `face-search`.
 - **aliases** — maps a name you type ("Goldie McHawn") to the canonical TPDB name
   ("Goldie Blair").
+- **body_index** — the roster's cached body vectors (per modality), ranked
+  against by `body-search`. Built by `index`, refined by `aggregate`.
+- **images** — the per-image corpus: one row per gathered image (vectors +
+  source/view/quality metadata, never image bytes). `body_index` centroids are
+  the quality-weighted, view-filtered aggregate of these.
 
 ---
 
@@ -253,7 +286,7 @@ flowchart TB
         direction TB
         app["luminary"]
         store[("SQLite + embeddings<br/>+ image cache + config")]
-        py["InsightFace (local ONNX)"]
+        py["InsightFace + MediaPipe<br/>(local ONNX subprocess)"]
         app --- store
         app --- py
     end
@@ -261,18 +294,21 @@ flowchart TB
     subgraph net["Network (explicit calls only)"]
         tpdb["ThePornDB API"]
         stash["StashDB API"]
+        imgs["pornpics · pichunter<br/>(image galleries)"]
     end
 
     app -->|"only on add/find/recommend"| tpdb
     app -->|"only if key set"| stash
+    app -->|"only on index/ingest"| imgs
 
     classDef trust fill:#1b3a1b,stroke:#4caf50,color:#fff;
     classDef untrust fill:#3a1b1b,stroke:#f44336,color:#fff;
     class app,store,py trust;
-    class tpdb,stash untrust;
+    class tpdb,stash,imgs untrust;
 ```
 
-- Face embeddings (biometric data) **never leave the machine**.
+- Face **and body** embeddings (biometric data) **never leave the machine** —
+  the image corpus stores vectors + metadata only, never image bytes.
 - Gender filter defaults to biological female and is enforced server- and
   client-side.
 - IAFD was rejected as a source: its robots.txt sets `ai-train=no`.
@@ -283,13 +319,21 @@ flowchart TB
 
 | Module | Responsibility |
 |--------|----------------|
-| `main.rs` | CLI parsing + command handlers (thin) |
+| `main.rs` / `cli` | CLI parsing + command handlers (thin; `cli/` holds the search/index subhandlers) |
+| `commands` | clap `Subcommand` enum (the 24 commands) |
 | `models` | `Performer`, `SearchFilters`, preference types |
-| `database` | SQLite: performers, candidates, aliases, embeddings |
+| `database` (+ `database::corpus`) | SQLite: performers, candidates, aliases, `body_index`, `images` |
 | `tpdb` | ThePornDB REST client + body-type inference |
 | `stashdb` | StashDB GraphQL client (image enrichment) |
-| `recommender` | preference tree, IDF, WHR, k-NN, scoring |
-| `embedder` | ArcFace via `face_embed.py`, cosine math, centroids |
-| `config` | gender filter, API keys, key resolution |
-| `image_cache` | local image download cache |
+| `pornpics` / `pichunter` | keyless full-body image-gallery sources for the body pipeline |
 | `scraper` | FreeOnes fallback when no API key |
+| `recommender` | preference tree, IDF, WHR, k-means, k-NN, scoring |
+| `embedder` | ArcFace (`face_embed.py`) + body vectors (`body_embed.py`), cosine math, centroids |
+| `blend` | multi-modal body-search fusion (face + frame + curves + projection + stats) |
+| `source` | per-image source/view quality gating for the corpus |
+| `query` | parsing of free-text attribute queries |
+| `region` | nationality/region attribute groups (slavic, nordic, latina, …) |
+| `eval` | offline scoring/eval harness |
+| `http` | shared `reqwest` client factory (one timeout + UA policy for every source) |
+| `config` | gender filter, API keys, key resolution, cross-platform data paths |
+| `image_cache` | local image download cache |

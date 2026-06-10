@@ -29,7 +29,7 @@ pub(super) fn in_band(band: Option<(f64, f64)>, p: &models::Performer) -> bool {
     match band {
         None => true,
         Some((h, t)) => {
-            crate::recommender::performer_height_cm(p).map_or(false, |c| (c - h).abs() <= t)
+            crate::recommender::performer_height_cm(p).is_some_and(|c| (c - h).abs() <= t)
         }
     }
 }
@@ -44,7 +44,7 @@ pub(super) fn hair_match(want: Option<&str>, p: &models::Performer) -> bool {
         Some(w) => p
             .hair_color
             .as_deref()
-            .map_or(false, |h| h.to_lowercase().contains(&w.to_lowercase())),
+            .is_some_and(|h| h.to_lowercase().contains(&w.to_lowercase())),
     }
 }
 
@@ -126,10 +126,7 @@ pub(crate) async fn body_search(
     let band = height_band(&reference, height_tol);
     let hair = hair.map(|h| h.to_lowercase());
     if let Some(h) = hair.as_deref() {
-        println!(
-            "{}",
-            format!("  hair filter: {} only", h).bright_black()
-        );
+        println!("{}", format!("  hair filter: {} only", h).bright_black());
     }
     if height_tol.is_some() && band.is_none() {
         println!(
@@ -299,7 +296,12 @@ pub(crate) async fn body_search(
             flat.extend(imgs);
             ranges.push((start, flat.len()));
         }
-        let all = embed(&flat).unwrap_or_default();
+        // A sidecar failure here used to be swallowed (empty vec → every
+        // candidate filtered out → misleading "no results"). Surface it.
+        let all = embed(&flat).context(
+            "Body-embedding sidecar failed while embedding the candidate pool \
+             (transient — model load or image download). Re-run the search.",
+        )?;
         pool.into_iter()
             .zip(ranges)
             .filter_map(|(p, (s, e))| {

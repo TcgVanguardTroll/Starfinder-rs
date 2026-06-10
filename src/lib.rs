@@ -15,6 +15,7 @@ pub mod config;
 pub mod database;
 pub mod embedder;
 pub mod eval;
+pub mod http;
 pub mod image_cache;
 pub mod models;
 pub mod pichunter;

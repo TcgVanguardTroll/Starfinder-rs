@@ -138,12 +138,7 @@ where
 
 impl TpdbClient {
     pub fn new(api_key: String) -> Self {
-        let client = reqwest::Client::builder()
-            .user_agent("Luminary/0.1.0")
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .unwrap();
-
+        let client = crate::http::client(crate::http::APP_UA);
         TpdbClient { client, api_key }
     }
 

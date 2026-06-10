@@ -1,0 +1,45 @@
+name: Claude Assistant
+
+# On-demand routines: mention @claude in any issue or PR comment to get
+# analysis, fixes, or follow-up work ("@claude fix the review findings",
+# "@claude why does this test fail?"). The repair stage of the loop.
+# Requires the ANTHROPIC_API_KEY repo secret; skips cleanly without it.
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  issues:
+    types: [opened, assigned]
+
+permissions:
+  contents: write # may push fix branches when asked
+  pull-requests: write
+  issues: write
+  actions: read
+  id-token: write
+
+jobs:
+  claude:
+    runs-on: ubuntu-latest
+    # Only spin up a runner when the trigger phrase is actually present.
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+    steps:
+      - name: Check for API key
+        id: key
+        run: echo "present=${{ secrets.ANTHROPIC_API_KEY != '' }}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: steps.key.outputs.present == 'true'
+
+      - uses: anthropics/claude-code-action@v1
+        if: steps.key.outputs.present == 'true'
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          trigger_phrase: "@claude"
+          claude_args: |
+            --allowedTools "Bash(gh:*),Bash(git:*),Bash(cargo:*),Bash(python3:*),Bash(ruff:*),Read,Write,Edit,Glob,Grep"

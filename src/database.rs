@@ -16,6 +16,19 @@ fn decode_embedding(val: rusqlite::types::Value) -> Option<Vec<f32>> {
     }
 }
 
+/// Decodes a stored performer JSON blob. One corrupt row used to panic every
+/// command that lists performers; instead skip it with a warning so the rest
+/// of the library stays usable.
+fn decode_performer(data: &str) -> Option<Performer> {
+    match serde_json::from_str(data) {
+        Ok(p) => Some(p),
+        Err(e) => {
+            eprintln!("warning: skipping corrupt performer row: {e}");
+            None
+        }
+    }
+}
+
 /// Database manager for storing performers
 pub struct Database {
     conn: Connection,
@@ -394,13 +407,10 @@ impl Database {
     /// Gets all performers
     pub fn get_all_performers(&self) -> Result<Vec<Performer>> {
         let mut stmt = self.conn.prepare("SELECT data FROM performers")?;
-        let performers = stmt
-            .query_map([], |row| {
-                let data: String = row.get(0)?;
-                Ok(serde_json::from_str(&data).unwrap())
-            })?
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(performers)
+        Ok(rows.iter().filter_map(|d| decode_performer(d)).collect())
     }
 
     /// Searches for performers matching filters
@@ -436,11 +446,11 @@ impl Database {
             .collect();
 
         let performers = stmt
-            .query_map(param_refs.as_slice(), |row| {
-                let data: String = row.get(0)?;
-                Ok(serde_json::from_str(&data).unwrap())
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+            .query_map(param_refs.as_slice(), |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?
+            .iter()
+            .filter_map(|d| decode_performer(d))
+            .collect();
 
         Ok(performers)
     }
@@ -473,13 +483,10 @@ impl Database {
         let mut stmt = self
             .conn
             .prepare("SELECT data FROM performers WHERE embedding IS NULL")?;
-        let performers = stmt
-            .query_map([], |row| {
-                let data: String = row.get(0)?;
-                Ok(serde_json::from_str(&data).unwrap())
-            })?
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(performers)
+        Ok(rows.iter().filter_map(|d| decode_performer(d)).collect())
     }
 
     /// Removes a performer by name
