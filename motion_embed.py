@@ -97,60 +97,62 @@ def analyse(path, landmarker):
     prev_pelvis = None
     scanned = 0
     raw = 0
-    while scanned < MAX_FRAMES:
-        if not cap.grab():
-            break
-        raw += 1
-        if raw % stride != 0:
-            continue
-        ok, frame = cap.retrieve()
-        if not ok:
-            break
-        scanned += 1
-        h0, w0 = frame.shape[:2]
-        scale = PROC_WIDTH / float(w0)
-        frame = cv2.resize(frame, (PROC_WIDTH, max(1, int(h0 * scale))))
-        h, w = frame.shape[:2]
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        res = landmarker.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        if res.pose_landmarks:
-            lm = res.pose_landmarks[0]
-            sh = ((lm[L_SH].x + lm[R_SH].x) / 2 * w, (lm[L_SH].y + lm[R_SH].y) / 2 * h)
-            hp = ((lm[L_HIP].x + lm[R_HIP].x) / 2 * w, (lm[L_HIP].y + lm[R_HIP].y) / 2 * h)
-            sw = abs(lm[L_SH].x - lm[R_SH].x) * w
-            torso = max(1.0, abs(hp[1] - sh[1]))
-            half = max(8.0, sw / 2)
-            pelvis = hp[1] / torso
-            if prev_gray is not None and prev_pelvis is not None:
-                skel_dy = abs(pelvis - prev_pelvis)
-                # Drop scene cuts / re-detections on another person: a continuous
-                # shot moves the pelvis only a little between sampled frames.
-                if skel_dy <= CUT_THRESH:
-                    flow = cv2.calcOpticalFlowFarneback(
-                        prev_gray, gray, None, 0.5, 3, 15, 3, 5, 1.2, 0
-                    )
-                    # Rigid reference: a thin band at the shoulder line moves with
-                    # the camera + body but carries little soft tissue, so ROI flow
-                    # ABOVE it is the jiggle. Better than whole-frame subtraction,
-                    # which over-counts background when the subject fills the frame.
-                    rigid_box = (sh[0] - half, sh[1] - 0.08 * torso,
-                                 sh[0] + half, sh[1] + 0.08 * torso)
-                    rigid = _roi_mean_vflow(flow, rigid_box, w, h)
-                    rigid = (rigid / torso) if rigid is not None else 0.0
-                    bust = (sh[0] - half, sh[1] + 0.10 * torso, sh[0] + half, sh[1] + 0.55 * torso)
-                    glute = (hp[0] - half, hp[1] - 0.15 * torso, hp[0] + half, hp[1] + 0.45 * torso)
-                    b = _roi_mean_vflow(flow, bust, w, h)
-                    g = _roi_mean_vflow(flow, glute, w, h)
-                    if b is not None and g is not None:
-                        bust_sig.append(b / torso)
-                        glute_sig.append(g / torso)
-                        rigid_sig.append(rigid)  # shoulder-band (rigid+camera) motion
-                        skel_sig.append(skel_dy)
-                        torso_samples.append(torso)
-            prev_pelvis = pelvis
-        prev_gray = gray
-    cap.release()
+    try:  # release the capture even if a frame raises (handle leak otherwise)
+        while scanned < MAX_FRAMES:
+            if not cap.grab():
+                break
+            raw += 1
+            if raw % stride != 0:
+                continue
+            ok, frame = cap.retrieve()
+            if not ok:
+                break
+            scanned += 1
+            h0, w0 = frame.shape[:2]
+            scale = PROC_WIDTH / float(w0)
+            frame = cv2.resize(frame, (PROC_WIDTH, max(1, int(h0 * scale))))
+            h, w = frame.shape[:2]
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            res = landmarker.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            if res.pose_landmarks:
+                lm = res.pose_landmarks[0]
+                sh = ((lm[L_SH].x + lm[R_SH].x) / 2 * w, (lm[L_SH].y + lm[R_SH].y) / 2 * h)
+                hp = ((lm[L_HIP].x + lm[R_HIP].x) / 2 * w, (lm[L_HIP].y + lm[R_HIP].y) / 2 * h)
+                sw = abs(lm[L_SH].x - lm[R_SH].x) * w
+                torso = max(1.0, abs(hp[1] - sh[1]))
+                half = max(8.0, sw / 2)
+                pelvis = hp[1] / torso
+                if prev_gray is not None and prev_pelvis is not None:
+                    skel_dy = abs(pelvis - prev_pelvis)
+                    # Drop scene cuts / re-detections on another person: a continuous
+                    # shot moves the pelvis only a little between sampled frames.
+                    if skel_dy <= CUT_THRESH:
+                        flow = cv2.calcOpticalFlowFarneback(
+                            prev_gray, gray, None, 0.5, 3, 15, 3, 5, 1.2, 0
+                        )
+                        # Rigid reference: a thin band at the shoulder line moves with
+                        # the camera + body but carries little soft tissue, so ROI flow
+                        # ABOVE it is the jiggle. Better than whole-frame subtraction,
+                        # which over-counts background when the subject fills the frame.
+                        rigid_box = (sh[0] - half, sh[1] - 0.08 * torso,
+                                     sh[0] + half, sh[1] + 0.08 * torso)
+                        rigid = _roi_mean_vflow(flow, rigid_box, w, h)
+                        rigid = (rigid / torso) if rigid is not None else 0.0
+                        bust = (sh[0] - half, sh[1] + 0.10 * torso, sh[0] + half, sh[1] + 0.55 * torso)
+                        glute = (hp[0] - half, hp[1] - 0.15 * torso, hp[0] + half, hp[1] + 0.45 * torso)
+                        b = _roi_mean_vflow(flow, bust, w, h)
+                        g = _roi_mean_vflow(flow, glute, w, h)
+                        if b is not None and g is not None:
+                            bust_sig.append(b / torso)
+                            glute_sig.append(g / torso)
+                            rigid_sig.append(rigid)  # shoulder-band (rigid+camera) motion
+                            skel_sig.append(skel_dy)
+                            torso_samples.append(torso)
+                prev_pelvis = pelvis
+            prev_gray = gray
+    finally:
+        cap.release()
 
     n = len(bust_sig)
     if n < 16:

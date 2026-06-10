@@ -74,33 +74,36 @@ def main():
         if times is None:
             cap.release()
             continue
-        for sidx, url in items:
-            cap.set(cv2.CAP_PROP_POS_MSEC, times[min(max(sidx - 1, 0), len(times) - 1)])
-            ok, frame = cap.read()
-            if not ok:
-                continue
-            checked += 1
-            h0, w0 = frame.shape[:2]
-            fr = cv2.resize(frame, (PROC_WIDTH, max(1, int(h0 * PROC_WIDTH / w0))))
-            image = mp.Image(image_format=mp.ImageFormat.SRGB,
-                             data=cv2.cvtColor(fr, cv2.COLOR_BGR2RGB))
-            res = pose.detect(image)
-            if not res.pose_landmarks:
-                continue
-            lm = res.pose_landmarks[0]
-            try:
-                sres = seg.segment(image)
-                mask = sres.confidence_masks[0].numpy_view() if sres.confidence_masks else None
-            except Exception:  # noqa: BLE001
-                mask = None
-            bust = be.build_bust_vector(lm, mask) if mask is not None else None
-            if bust:
-                filled += 1
-                if args.write:
-                    con.execute("UPDATE images SET bust_vec=? WHERE performer=? AND url=?",
-                                (blob(bust), perf, url))
-        if args.write:
-            con.commit()
+        try:  # release the capture even if a frame raises (handles leak per clip otherwise)
+            for sidx, url in items:
+                cap.set(cv2.CAP_PROP_POS_MSEC, times[min(max(sidx - 1, 0), len(times) - 1)])
+                ok, frame = cap.read()
+                if not ok:
+                    continue
+                checked += 1
+                h0, w0 = frame.shape[:2]
+                fr = cv2.resize(frame, (PROC_WIDTH, max(1, int(h0 * PROC_WIDTH / w0))))
+                image = mp.Image(image_format=mp.ImageFormat.SRGB,
+                                 data=cv2.cvtColor(fr, cv2.COLOR_BGR2RGB))
+                res = pose.detect(image)
+                if not res.pose_landmarks:
+                    continue
+                lm = res.pose_landmarks[0]
+                try:
+                    sres = seg.segment(image)
+                    mask = sres.confidence_masks[0].numpy_view() if sres.confidence_masks else None
+                except Exception:  # noqa: BLE001
+                    mask = None
+                bust = be.build_bust_vector(lm, mask) if mask is not None else None
+                if bust:
+                    filled += 1
+                    if args.write:
+                        con.execute("UPDATE images SET bust_vec=? WHERE performer=? AND url=?",
+                                    (blob(bust), perf, url))
+            if args.write:
+                con.commit()
+        finally:
+            cap.release()
     con.close()
     print(f"checked {checked} footage frames; bust extracted on {filled} "
           f"(profiles). {'WROTE bust_vec' if args.write else 'DRY-RUN'}.")
